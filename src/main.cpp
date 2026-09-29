@@ -99,7 +99,7 @@ Superblock read_superblock(char* byte_start){
 	return sb;
 }
 
-int main(){
+int read_core_structures(){
 
 	ifstream file("/home/shivanshu_muppana/disk_proj/disk-backpup.img",ios::binary);
 
@@ -124,4 +124,12 @@ int main(){
 	file.read(group_table,1024);
 	display_group_table(group_table,sb);
 
+	return 0;
+}
+
+int main(){
+	read_core_structures();
+
+
+	return 0;
 }
