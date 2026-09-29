@@ -27,6 +27,7 @@ Parsed the following fields:
 - Total unallocated inodes
 - First data block
 - Block size
+- Inode size
 - Blocks per group
 - Inodes per group
 - Filesystem signature
@@ -51,9 +52,9 @@ The program reads the group descriptor table and iterates over each descriptor, 
 - Number of used directories
 
 ### Output
-<img width="570" height="914" alt="image" src="https://github.com/user-attachments/assets/1d43afa8-0c10-4e32-af40-5632ea60f6d1" />
+<img width="536" height="958" alt="image" src="https://github.com/user-attachments/assets/91c7ece3-6a53-4c3b-b482-bbd59272d7d4" />
 
-## Goals
+### Goals
 - Read Core Structures: Parse the filesystem image to extract and display the contents of the superblock and block group descriptors.
 - Traverse Directories: Starting from the root directory, your program must be able to recursively traverse all subdirectories, printing the complete layout of the filesystem.
 - Read File Contents: For any given file in the filesystem, your program should be able to locate its data blocks and display its full contents.
