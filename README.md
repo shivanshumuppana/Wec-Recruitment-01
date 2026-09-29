@@ -33,7 +33,6 @@ Parsed the following fields:
 - Filesystem state
 - Creator OS ID
 - First non reserved inode
-<img width="610" height="438" alt="image" src="https://github.com/user-attachments/assets/1198934b-40a8-4d14-bc96-6c6fdd6bf386" />
 
 ### 3. Block group descriptor table
 The block group descriptor table is located immediately after the superblock. (ref.1)
