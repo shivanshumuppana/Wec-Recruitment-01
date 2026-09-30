@@ -6,7 +6,7 @@
 #include <cmath>
 using namespace std;
 
-struct Superblock {
+struct Superblock{
     uint32_t total_inodes;
     uint32_t total_blocks;
     uint32_t reserved_blocks;
@@ -14,12 +14,29 @@ struct Superblock {
     uint32_t total_unalloc_inodes;
     uint32_t first_data_block;
     uint32_t block_size;
+    uint32_t inode_size;
     uint32_t blocks_per_group;
     uint32_t inodes_per_group;
     uint16_t signature;
     uint16_t filesystem_state;
     uint32_t creator_os_id;
     uint32_t first_non_reserved_inode;
+};
+
+struct group_descriptor{
+	uint32_t block_bitmap;
+	uint32_t inode_bitmap;
+	uint32_t inode_table;
+	uint32_t free_blocks;
+	uint32_t free_inodes;
+	uint32_t used_dirs;
+};
+
+struct inode{
+    uint16_t mode;
+    uint32_t size;
+    uint32_t blocks;
+    uint32_t block_pointers[15];
 };
 
 uint32_t calculate_bytes(char* byte_start,int no_of_bytes){
@@ -32,24 +49,29 @@ uint32_t calculate_bytes(char* byte_start,int no_of_bytes){
 	return result;
 }
 
-void display_group_descriptor(char* byte_start,int group_no){
+group_descriptor read_group_descriptor(char* byte_start){
 
-	uint32_t block_bitmap = calculate_bytes(byte_start, 4);
-	uint32_t inode_bitmap = calculate_bytes(byte_start + 4, 4);
-	uint32_t inode_table = calculate_bytes(byte_start + 8, 4);
-	uint32_t free_blocks = calculate_bytes(byte_start + 12, 2);
-	uint32_t free_inodes = calculate_bytes(byte_start + 14, 2);
-	uint32_t used_dirs = calculate_bytes(byte_start + 16, 2);
+	group_descriptor gd;
 
+	gd.block_bitmap = calculate_bytes(byte_start, 4);
+	gd.inode_bitmap = calculate_bytes(byte_start + 4, 4);
+	gd.inode_table = calculate_bytes(byte_start + 8, 4);
+	gd.free_blocks = calculate_bytes(byte_start + 12, 2);
+	gd.free_inodes = calculate_bytes(byte_start + 14, 2);
+	gd.used_dirs = calculate_bytes(byte_start + 16, 2);
+
+	return gd;
+}
+
+void display_group_descriptor(group_descriptor gd,int group_no){
 	cout << "Block Group " << group_no << endl;
-	cout << "Block bitmap: " << block_bitmap << endl;
-	cout << "Inode bitmap: " << inode_bitmap << endl;
-	cout << "Inode table: " << inode_table << endl;
-	cout << "Free blocks: " << free_blocks << endl;
-	cout << "Free inodes: " << free_inodes << endl;
-	cout << "Used directories: " << used_dirs << endl;
+	cout << "Block bitmap: " << gd.block_bitmap << endl;
+	cout << "Inode bitmap: " << gd.inode_bitmap << endl;
+	cout << "Inode table: " << gd.inode_table << endl;
+	cout << "Free blocks: " << gd.free_blocks << endl;
+	cout << "Free inodes: " << gd.free_inodes << endl;
+	cout << "Used directories: " << gd.used_dirs << endl;
 	cout << endl;
-
 }
 
 void display_group_table(char* byte_start,Superblock sb){
@@ -57,7 +79,7 @@ void display_group_table(char* byte_start,Superblock sb){
 	cout << "Group Table: " << endl;
 	int no_of_groups = ceil((float)sb.total_blocks/sb.blocks_per_group);
 	for(int i = 0;i<no_of_groups;i++){
-		display_group_descriptor(byte_start+(32*i),i);
+		display_group_descriptor(read_group_descriptor(byte_start+(32*i)),i);
 	}
 
 }
@@ -73,6 +95,7 @@ Superblock read_superblock(char* byte_start){
 	sb.total_unalloc_inodes = calculate_bytes(byte_start+16,4);
 	sb.first_data_block = calculate_bytes(byte_start+20,4);
 	sb.block_size = 1024 << calculate_bytes(byte_start+24,4);
+	sb.inode_size = calculate_bytes(byte_start+88,2);
 	sb.blocks_per_group = calculate_bytes(byte_start+32,4);
 	sb.inodes_per_group = calculate_bytes(byte_start+40,4);
 	sb.signature = calculate_bytes(byte_start+56,2);
@@ -89,6 +112,7 @@ Superblock read_superblock(char* byte_start){
 	cout << "Free inodes: " << sb.total_unalloc_inodes << endl;
 	cout << "First data block: " << sb.first_data_block << endl;
 	cout << "Block size: " << sb.block_size << " bytes" << endl;
+	cout << "Inode size: " << sb.inode_size << " bytes" << endl;
 	cout << "Blocks per group: " << sb.blocks_per_group << endl;
 	cout << "Inodes per group: " << sb.inodes_per_group << endl;
 	cout << "Signature: 0x" << hex << sb.signature << dec << endl;
@@ -99,7 +123,91 @@ Superblock read_superblock(char* byte_start){
 	return sb;
 }
 
-int read_core_structures(){
+int display_inode(int inode_no,Superblock sb,ifstream& file){
+
+	file.seekg(2048);
+	char group_table[1024];
+	file.read(group_table,1024);
+
+	int block_group = ((inode_no-1)/sb.inodes_per_group);
+	group_descriptor gd = read_group_descriptor(group_table+(32*block_group));
+
+	int index = ((inode_no-1)%sb.inodes_per_group);
+	uint32_t byte_shift = (index*(sb.inode_size)) + (gd.inode_table)*(sb.block_size);
+
+	file.seekg(byte_shift);
+	char inode_buffer[sb.inode_size];
+	file.read(inode_buffer,sb.inode_size);
+
+	inode root;
+	root.mode = calculate_bytes(inode_buffer, 2);
+	root.size = calculate_bytes(inode_buffer + 4, 4);
+	root.blocks = calculate_bytes(inode_buffer + 28, 4);
+
+	for (int i = 0;i<15;i++) {
+    		root.block_pointers[i] = calculate_bytes(inode_buffer + 40 + i * 4, 4);
+	}
+
+	for(int i = 0;i<12;i++){
+		if(root.block_pointers[i]==0){
+			break;
+		}
+		uint32_t offset = 0;
+		while(offset<sb.block_size){
+			file.seekg(root.block_pointers[i]*sb.block_size+offset);
+			char entry_buffer[8];
+			file.read(entry_buffer,8);
+
+			cout << i << endl;
+			cout << root.block_pointers[i] << endl;
+			cout << offset << endl;
+
+			cout << "Inode: " << calculate_bytes(entry_buffer+0,4) << endl;
+			cout <<	"Total size of entry: " << calculate_bytes(entry_buffer+4,2) << endl;
+			cout << "Name length: " << calculate_bytes(entry_buffer+6,1) << endl;
+			cout << "Type: " << calculate_bytes(entry_buffer+7,1) << endl;
+			cout << endl;
+
+			if(!calculate_bytes(entry_buffer+4,2)){
+				break;
+			}
+
+			offset += calculate_bytes(entry_buffer+4,2);
+		}
+	}
+
+	return 0;
+}
+
+
+int read_core_structures(ifstream& file){
+
+	//print superblock
+	file.seekg(1024);
+	char bing[1024];
+	file.read(bing,1024);
+
+	Superblock sb;
+	sb = read_superblock(bing);
+
+	//print group descriptor table
+	file.seekg(2048);
+	char group_table[1024];
+	file.read(group_table,1024);
+
+	display_group_table(group_table,sb);
+	display_inode(2,sb,file);
+	return 0;
+}
+
+int traverse_directories(){
+
+
+
+	return 0;
+}
+
+int main(){
 
 	ifstream file("/home/shivanshu_muppana/disk_proj/disk-backpup.img",ios::binary);
 
@@ -109,27 +217,72 @@ int read_core_structures(){
 		return 1;
 	}
 
-	//print superblock
-	file.seekg(1024);
-	char bing[1024];
-	file.read(bing,1024);
+	read_core_structures(file);
 
-	Superblock sb;
-	sb = read_superblock(bing);
+	return 0;
+}
+/*
+
+	uint32_t temp = root.block_pointers[0]*sb.block_size;
+
+	file.seekg(temp);
+	char block_buffer[8];
+	file.read(block_buffer,8);
+
+	cout << "Name length: " << calculate_bytes(block_buffer + 6,1) << endl;
+	cout << "Inode: " << calculate_bytes(block_buffer,4) << endl;
+	cout << "Rec length: " << calculate_bytes(block_buffer + 4,2) << endl;
+	cout << "Type indicator: " << calculate_bytes(block_buffer + 7,1) << endl;
 	cout << endl;
 
-	//print group descriptor table
-	file.seekg(2048);
-	char group_table[1024];
-	file.read(group_table,1024);
-	display_group_table(group_table,sb);
+	temp += calculate_bytes(block_buffer+4,2);
+	file.seekg(temp);
+	file.read(block_buffer,8);
 
-	return 0;
-}
+	cout << "Name length: " << calculate_bytes(block_buffer + 6,1) << endl;
+	cout << "Inode: " << calculate_bytes(block_buffer,4) << endl;
+	cout << "Name length: " << calculate_bytes(block_buffer + 4,2) << endl;
+	cout << "Type indicator: " << calculate_bytes(block_buffer + 7,1) << endl;
+	cout << endl;
 
-int main(){
-	read_core_structures();
+	temp += calculate_bytes(block_buffer+4,2);
+	file.seekg(temp);
+	file.read(block_buffer,8);
+
+	cout << "Name length: " << calculate_bytes(block_buffer + 6,1) << endl;
+	cout << "Inode: " << calculate_bytes(block_buffer,4) << endl;
+	cout << "Name length: " << calculate_bytes(block_buffer + 4,2) << endl;
+	cout << "Type indicator: " << calculate_bytes(block_buffer + 7,1) << endl;
+	cout << endl;
+
+	temp += calculate_bytes(block_buffer+4,2);
+	file.seekg(temp);
+	file.read(block_buffer,8);
+
+	cout << "Name length: " << calculate_bytes(block_buffer + 6,1) << endl;
+	cout << "Inode: " << calculate_bytes(block_buffer,4) << endl;
+	cout << "Name length: " << calculate_bytes(block_buffer + 4,2) << endl;
+	cout << "Type indicator: " << calculate_bytes(block_buffer + 7,1) << endl;
+	cout << endl;
+
+	temp += calculate_bytes(block_buffer+4,2);
+	file.seekg(temp);
+	file.read(block_buffer,8);
+
+	cout << "Name length: " << calculate_bytes(block_buffer + 6,1) << endl;
+	cout << "Inode: " << calculate_bytes(block_buffer,4) << endl;
+	cout << "Name length: " << calculate_bytes(block_buffer + 4,2) << endl;
+	cout << "Type indicator: " << calculate_bytes(block_buffer + 7,1) << endl;
+	cout << endl;
 
 
-	return 0;
-}
+	ifstream file("/home/shivanshu_muppana/disk_proj/disk-backpup.img",ios::binary);
+
+	//if error
+	if(!file){
+		cerr << "Failed: " << strerror(errno) << endl;
+		return 1;
+	}
+
+
+*/
