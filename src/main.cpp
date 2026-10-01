@@ -40,7 +40,7 @@ struct inode{
 };
 
 void process_directory_block(uint32_t block_number,Superblock sb,ifstream& file,int depth);
-int display_inode(int inode_no,Superblock sb,ifstream& file,int depth);
+int traverse_directory(int inode_no,Superblock sb,ifstream& file,int depth);
 
 
 uint32_t calculate_bytes(char* byte_start,int no_of_bytes){
@@ -191,7 +191,7 @@ void process_directory_block(uint32_t block_number,Superblock sb,ifstream& file,
 
 		// Recursive call
 		if(type==2){
-			display_inode(subdirec_inode_no,sb,file,depth+1);
+			traverse_directory(subdirec_inode_no,sb,file,depth+1);
 		}
 
 		offset += entry_length;
@@ -201,7 +201,25 @@ void process_directory_block(uint32_t block_number,Superblock sb,ifstream& file,
 
 }
 
-int display_inode(int inode_no,Superblock sb,ifstream& file,int depth){
+void process_indirect_block(uint32_t block_no,Superblock sb,ifstream& file,int depth,int level){
+
+	file.seekg(block_no*sb.block_size);
+	char buffer[sb.block_size];
+	file.read(buffer,sb.block_size);
+
+	for(int i = 0;i<(sb.block_size/4);i++){
+		uint32_t indirect_block_no = calculate_bytes(buffer+(4*i),4);
+		if(level == 1){
+			process_directory_block(indirect_block_no,sb,file,depth);
+		}
+		else{
+			process_indirect_block(indirect_block_no,sb,file,depth,level-1);
+		}
+	}
+
+}
+
+int traverse_directory(int inode_no,Superblock sb,ifstream& file,int depth){
 
 	file.seekg(2048);
 	char group_table[1024];
@@ -226,8 +244,24 @@ int display_inode(int inode_no,Superblock sb,ifstream& file,int depth){
     		root.block_pointers[i] = calculate_bytes(inode_buffer + 40 + i * 4, 4);
 	}
 
+
+	//direct pointers
 	for(int i = 0;i<12;i++){
 		process_directory_block(root.block_pointers[i],sb,file,depth);
+	}
+
+	/* indirect pointers */
+	//single indirect pointer
+	if(root.block_pointers[12]!=0){
+		process_indirect_block(root.block_pointers[12],sb,file,depth,1);
+	}
+
+	if(root.block_pointers[13]!=0){
+		process_indirect_block(root.block_pointers[13],sb,file,depth,2);
+	}
+
+	if(root.block_pointers[14]!=0){
+		process_indirect_block(root.block_pointers[14],sb,file,depth,3);
 	}
 
 	return 0;
@@ -245,7 +279,6 @@ int read_core_structures(Superblock sb,ifstream& file){
 	file.read(group_table,1024);
 
 	display_group_table(group_table,sb);
-
 
 	return 0;
 }
@@ -270,7 +303,7 @@ int main(){
 	sb = process_superblock(bing);
 
 	read_core_structures(sb,file);
-	display_inode(2,sb,file,0);
+	traverse_directory(2,sb,file,0);
 
 	return 0;
 }
