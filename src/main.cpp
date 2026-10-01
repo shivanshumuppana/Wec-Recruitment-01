@@ -39,6 +39,10 @@ struct inode{
     uint32_t block_pointers[15];
 };
 
+void process_directory_block(uint32_t block_number,Superblock sb,ifstream& file,int depth);
+int display_inode(int inode_no,Superblock sb,ifstream& file,int depth);
+
+
 uint32_t calculate_bytes(char* byte_start,int no_of_bytes){
 	uint32_t result = 0;
 
@@ -84,7 +88,7 @@ void display_group_table(char* byte_start,Superblock sb){
 
 }
 
-Superblock read_superblock(char* byte_start){
+Superblock process_superblock(char* byte_start){
 
 	Superblock sb;
 
@@ -103,7 +107,10 @@ Superblock read_superblock(char* byte_start){
 	sb.creator_os_id = calculate_bytes(byte_start+72,4);
 	sb.first_non_reserved_inode = calculate_bytes(byte_start+84,4);
 
+	return sb;
+}
 
+void display_superblock(Superblock sb){
 	cout << endl << "Superblock Content: " << endl;
 	cout << "Total inodes: " << sb.total_inodes << endl;
 	cout << "Total blocks: " << sb.total_blocks << endl;
@@ -120,7 +127,78 @@ Superblock read_superblock(char* byte_start){
 	cout << "Creator OS ID: " << sb.creator_os_id << endl;
 	cout << "First non-reserved inode: " << sb.first_non_reserved_inode << endl;
 	cout << endl;
-	return sb;
+}
+
+void process_directory_block(uint32_t block_number,Superblock sb,ifstream& file,int depth){
+
+	if(block_number==0){
+		return;
+	}
+	uint32_t offset = 0;
+	file.seekg(block_number*sb.block_size);
+	char direc_buffer[sb.block_size];
+	file.read(direc_buffer,sb.block_size);
+
+	while(offset<sb.block_size){
+
+		int name_length = calculate_bytes(direc_buffer+6+offset,1);
+		int entry_length = calculate_bytes(direc_buffer+4+offset,2);
+		int type = calculate_bytes(direc_buffer+7+offset,1);
+		int subdirec_inode_no = calculate_bytes(direc_buffer+0+offset,4);
+		char name[name_length+1];
+
+		//handling no padding, empty entries and the double/single dot entries
+		if(entry_length==0){
+			break;
+		}
+		if(subdirec_inode_no==0){
+			offset += entry_length;
+			continue;
+		}
+
+		for(int j = 0;j<name_length;j++){
+			name[j] = calculate_bytes(direc_buffer+8+offset+j,1);
+		}
+		name[name_length] = '\0';
+
+		if (strcmp(name,"..")==0 || strcmp(name,".")==0){
+			offset += entry_length;
+			continue;
+		}
+
+
+		// Printing Name
+		for(int j = 0;j<depth;j++){
+			cout << "	";
+		}
+		cout << "Name: " << name << endl;
+
+		// Printing type
+		for(int j = 0;j<depth;j++){
+			cout << "	";
+		}
+		if(type==0){
+			cout << "Type: Unknown" << endl;
+		}
+		else if(type==1){
+			cout << "Type: File" << endl;
+		}
+		else if(type==2){
+			cout << "Type: Directory" << endl;
+		}
+		cout << endl;
+
+
+		// Recursive call
+		if(type==2){
+			display_inode(subdirec_inode_no,sb,file,depth+1);
+		}
+
+		offset += entry_length;
+	}
+
+	return;
+
 }
 
 int display_inode(int inode_no,Superblock sb,ifstream& file,int depth){
@@ -149,94 +227,17 @@ int display_inode(int inode_no,Superblock sb,ifstream& file,int depth){
 	}
 
 	for(int i = 0;i<12;i++){
-		if(root.block_pointers[i]==0){
-			break;
-		}
-		uint32_t offset = 0;
-		file.seekg(root.block_pointers[i]*sb.block_size);
-		char direc_buffer[sb.block_size];
-		file.read(direc_buffer,sb.block_size);
-
-		while(offset<sb.block_size){
-
-			int name_length = calculate_bytes(direc_buffer+6+offset,1);
-			int entry_length = calculate_bytes(direc_buffer+4+offset,2);
-			int type = calculate_bytes(direc_buffer+7+offset,1);
-			int subdirec_inode_no = calculate_bytes(direc_buffer+0+offset,4);
-			char name[name_length+1];
-
-			//handling no padding, empty entries and the double/single dot entries
-			if(entry_length==0){
-				break;
-			}
-			if(subdirec_inode_no==0){
-				offset += entry_length;
-				continue;
-			}
-
-			for(int j = 0;j<name_length;j++){
-				name[j] = calculate_bytes(direc_buffer+8+offset+j,1);
-			}
-			name[name_length] = '\0';
-
-			if (strcmp(name,"..")==0 || strcmp(name,".")==0){
-				offset += entry_length;
-				continue;
-			}
-
-			for(int j = 0;j<depth;j++){
-				cout << "	";
-			}
-			cout << "Name: " << name << endl;
-
-			//cout << "Inode: " << subdirec_inode_no << endl;
-			//cout << "Total size of entry: " << entry_length << endl;
-			//cout << "Name length: " << name_length << endl;
-
-			for(int j = 0;j<depth;j++){
-				cout << "	";
-			}
-			if(type==0){
-				cout << "Type: Unknown" << endl;
-			}
-			else if(type==1){
-				cout << "Type: File" << endl;
-			}
-			else if(type==2){
-				cout << "Type: Directory" << endl;
-			}
-			cout << endl;
-
-			//bool flag = false;
-			if(type==2){
-				//cout << "Entering subdirectory: " << endl;
-				//cout << "Due to: " << name << endl;
-				//cout << "Having inode no: " << subdirec_inode_no << endl;
-				//cout << "With parent inode no: " << inode_no << endl;
-				//flag = true;
-				display_inode(subdirec_inode_no,sb,file,depth+1);
-			}
-			//if(flag){
-			//	cout << "Exiting subdir" << endl;
-			//}
-
-			offset += entry_length;
-		}
+		process_directory_block(root.block_pointers[i],sb,file,depth);
 	}
 
 	return 0;
 }
 
 
-int read_core_structures(ifstream& file){
+int read_core_structures(Superblock sb,ifstream& file){
 
 	//print superblock
-	file.seekg(1024);
-	char bing[1024];
-	file.read(bing,1024);
-
-	Superblock sb;
-	sb = read_superblock(bing);
+	display_superblock(sb);
 
 	//print group descriptor table
 	file.seekg(2048);
@@ -244,12 +245,6 @@ int read_core_structures(ifstream& file){
 	file.read(group_table,1024);
 
 	display_group_table(group_table,sb);
-	display_inode(2,sb,file,0);
-	return 0;
-}
-
-int traverse_directories(){
-
 
 
 	return 0;
@@ -265,7 +260,17 @@ int main(){
 		return 1;
 	}
 
-	read_core_structures(file);
+
+	//process superblock
+	file.seekg(1024);
+	char bing[1024];
+	file.read(bing,1024);
+
+	Superblock sb;
+	sb = process_superblock(bing);
+
+	read_core_structures(sb,file);
+	display_inode(2,sb,file,0);
 
 	return 0;
 }
