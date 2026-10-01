@@ -80,7 +80,7 @@ The directory traversal has the following program flow:
   
 ### Block Pointer Handling
 Supports all ext2 inode block pointer levels (ref.1):
--12 direct block pointers
+- 12 direct block pointers
 - Single indirect pointer
 - Double indirect pointer
 - Triple indirect pointer
@@ -92,7 +92,8 @@ Recursively handles indirect block pointers by following the indirect block poin
     - process_indirect_block() : recursively handles indirect block pointers.
 
 ### Output
-Output snippet: 
+Output snippet:
+
 <img width="452" height="1568" alt="image" src="https://github.com/user-attachments/assets/02d9957b-45a1-4bf0-b24e-0308cc61c498" />
 
 ## Goals
