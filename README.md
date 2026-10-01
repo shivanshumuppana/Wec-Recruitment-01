@@ -70,7 +70,8 @@ The directory traversal has the following program flow:
     - File type
     - File name
 - Recursively traverse directory entries whose File type is 'Directory'.
-- Use indentation based on the recursion depth to display filesystem hierarchy
+- Recursively handle indirect block pointers.
+- Use indentation based on the recursion depth to display filesystem hierarchy.
 
 ### Directory Entry Handling
 - Entries '.' , '..' are not printed or recursively traversed.
