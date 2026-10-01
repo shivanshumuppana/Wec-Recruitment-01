@@ -123,7 +123,15 @@ Superblock read_superblock(char* byte_start){
 	return sb;
 }
 
-int display_inode(int inode_no,Superblock sb,ifstream& file){
+int display_inode(int inode_no,Superblock sb){
+
+	ifstream file("/home/shivanshu_muppana/disk_proj/disk-backpup.img",ios::binary);
+
+	//if error
+	if(!file){
+		cerr << "Failed: " << strerror(errno) << endl;
+		return 1;
+	}
 
 	file.seekg(2048);
 	char group_table[1024];
@@ -153,26 +161,45 @@ int display_inode(int inode_no,Superblock sb,ifstream& file){
 			break;
 		}
 		uint32_t offset = 0;
+		file.seekg(root.block_pointers[i]*sb.block_size);
+		char direc_buffer[sb.block_size];
+		file.read(direc_buffer,sb.block_size);
+
 		while(offset<sb.block_size){
-			file.seekg(root.block_pointers[i]*sb.block_size+offset);
-			char entry_buffer[8];
-			file.read(entry_buffer,8);
 
-			cout << i << endl;
-			cout << root.block_pointers[i] << endl;
-			cout << offset << endl;
+			int name_length = calculate_bytes(direc_buffer+6+offset,1);
+			int entry_length = calculate_bytes(direc_buffer+4+offset,2);
+			int type = calculate_bytes(direc_buffer+7+offset,1);
+			int subdirec_inode_no = calculate_bytes(direc_buffer+0+offset,4);
+			char name[name_length+1];
 
-			cout << "Inode: " << calculate_bytes(entry_buffer+0,4) << endl;
-			cout <<	"Total size of entry: " << calculate_bytes(entry_buffer+4,2) << endl;
-			cout << "Name length: " << calculate_bytes(entry_buffer+6,1) << endl;
-			cout << "Type: " << calculate_bytes(entry_buffer+7,1) << endl;
+			cout << "Inode: " << subdirec_inode_no << endl;
+			cout <<	"Total size of entry: " << entry_length << endl;
+			cout << "Name length: " << name_length << endl;
+			cout << "Type: " << type << endl;
+			for(int j = 0;j<name_length;j++){
+				name[j] = calculate_bytes(direc_buffer+8+offset+j,1);
+			}
+			name[name_length] = '\0';
+			cout << "Name: " << name << endl;
 			cout << endl;
 
-			if(!calculate_bytes(entry_buffer+4,2)){
-				break;
+			/*
+			bool flag = false;
+			if((strcmp(name,"..") && strcmp(name,".")) && (type==2)){
+				cout << "Entering subdirectory: " << endl;
+				cout << "Due to: " << name << endl;
+				cout << "Having inode no: " << subdirec_inode_no << endl;
+				cout << "With parent inode no: " << inode_no << endl;
+				flag = true;
+				display_inode(subdirec_inode_no,sb);
 			}
+			if(flag){
+				cout << "Exiting subdir" << endl;
+			}
+			*/
 
-			offset += calculate_bytes(entry_buffer+4,2);
+			offset += entry_length;
 		}
 	}
 
@@ -196,7 +223,7 @@ int read_core_structures(ifstream& file){
 	file.read(group_table,1024);
 
 	display_group_table(group_table,sb);
-	display_inode(2,sb,file);
+	display_inode(2,sb);
 	return 0;
 }
 
@@ -221,68 +248,4 @@ int main(){
 
 	return 0;
 }
-/*
 
-	uint32_t temp = root.block_pointers[0]*sb.block_size;
-
-	file.seekg(temp);
-	char block_buffer[8];
-	file.read(block_buffer,8);
-
-	cout << "Name length: " << calculate_bytes(block_buffer + 6,1) << endl;
-	cout << "Inode: " << calculate_bytes(block_buffer,4) << endl;
-	cout << "Rec length: " << calculate_bytes(block_buffer + 4,2) << endl;
-	cout << "Type indicator: " << calculate_bytes(block_buffer + 7,1) << endl;
-	cout << endl;
-
-	temp += calculate_bytes(block_buffer+4,2);
-	file.seekg(temp);
-	file.read(block_buffer,8);
-
-	cout << "Name length: " << calculate_bytes(block_buffer + 6,1) << endl;
-	cout << "Inode: " << calculate_bytes(block_buffer,4) << endl;
-	cout << "Name length: " << calculate_bytes(block_buffer + 4,2) << endl;
-	cout << "Type indicator: " << calculate_bytes(block_buffer + 7,1) << endl;
-	cout << endl;
-
-	temp += calculate_bytes(block_buffer+4,2);
-	file.seekg(temp);
-	file.read(block_buffer,8);
-
-	cout << "Name length: " << calculate_bytes(block_buffer + 6,1) << endl;
-	cout << "Inode: " << calculate_bytes(block_buffer,4) << endl;
-	cout << "Name length: " << calculate_bytes(block_buffer + 4,2) << endl;
-	cout << "Type indicator: " << calculate_bytes(block_buffer + 7,1) << endl;
-	cout << endl;
-
-	temp += calculate_bytes(block_buffer+4,2);
-	file.seekg(temp);
-	file.read(block_buffer,8);
-
-	cout << "Name length: " << calculate_bytes(block_buffer + 6,1) << endl;
-	cout << "Inode: " << calculate_bytes(block_buffer,4) << endl;
-	cout << "Name length: " << calculate_bytes(block_buffer + 4,2) << endl;
-	cout << "Type indicator: " << calculate_bytes(block_buffer + 7,1) << endl;
-	cout << endl;
-
-	temp += calculate_bytes(block_buffer+4,2);
-	file.seekg(temp);
-	file.read(block_buffer,8);
-
-	cout << "Name length: " << calculate_bytes(block_buffer + 6,1) << endl;
-	cout << "Inode: " << calculate_bytes(block_buffer,4) << endl;
-	cout << "Name length: " << calculate_bytes(block_buffer + 4,2) << endl;
-	cout << "Type indicator: " << calculate_bytes(block_buffer + 7,1) << endl;
-	cout << endl;
-
-
-	ifstream file("/home/shivanshu_muppana/disk_proj/disk-backpup.img",ios::binary);
-
-	//if error
-	if(!file){
-		cerr << "Failed: " << strerror(errno) << endl;
-		return 1;
-	}
-
-
-*/
