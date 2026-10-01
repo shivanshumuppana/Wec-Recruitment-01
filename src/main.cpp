@@ -123,15 +123,7 @@ Superblock read_superblock(char* byte_start){
 	return sb;
 }
 
-int display_inode(int inode_no,Superblock sb){
-
-	ifstream file("/home/shivanshu_muppana/disk_proj/disk-backpup.img",ios::binary);
-
-	//if error
-	if(!file){
-		cerr << "Failed: " << strerror(errno) << endl;
-		return 1;
-	}
+int display_inode(int inode_no,Superblock sb,ifstream& file,int depth){
 
 	file.seekg(2048);
 	char group_table[1024];
@@ -173,31 +165,60 @@ int display_inode(int inode_no,Superblock sb){
 			int subdirec_inode_no = calculate_bytes(direc_buffer+0+offset,4);
 			char name[name_length+1];
 
-			cout << "Inode: " << subdirec_inode_no << endl;
-			cout <<	"Total size of entry: " << entry_length << endl;
-			cout << "Name length: " << name_length << endl;
-			cout << "Type: " << type << endl;
+			//handling no padding, empty entries and the double/single dot entries
+			if(entry_length==0){
+				break;
+			}
+			if(subdirec_inode_no==0){
+				offset += entry_length;
+				continue;
+			}
+
 			for(int j = 0;j<name_length;j++){
 				name[j] = calculate_bytes(direc_buffer+8+offset+j,1);
 			}
 			name[name_length] = '\0';
+
+			if (strcmp(name,"..")==0 || strcmp(name,".")==0){
+				offset += entry_length;
+				continue;
+			}
+
+			for(int j = 0;j<depth;j++){
+				cout << "	";
+			}
 			cout << "Name: " << name << endl;
+
+			//cout << "Inode: " << subdirec_inode_no << endl;
+			//cout << "Total size of entry: " << entry_length << endl;
+			//cout << "Name length: " << name_length << endl;
+
+			for(int j = 0;j<depth;j++){
+				cout << "	";
+			}
+			if(type==0){
+				cout << "Type: Unknown" << endl;
+			}
+			else if(type==1){
+				cout << "Type: File" << endl;
+			}
+			else if(type==2){
+				cout << "Type: Directory" << endl;
+			}
 			cout << endl;
 
-			/*
-			bool flag = false;
-			if((strcmp(name,"..") && strcmp(name,".")) && (type==2)){
-				cout << "Entering subdirectory: " << endl;
-				cout << "Due to: " << name << endl;
-				cout << "Having inode no: " << subdirec_inode_no << endl;
-				cout << "With parent inode no: " << inode_no << endl;
-				flag = true;
-				display_inode(subdirec_inode_no,sb);
+			//bool flag = false;
+			if(type==2){
+				//cout << "Entering subdirectory: " << endl;
+				//cout << "Due to: " << name << endl;
+				//cout << "Having inode no: " << subdirec_inode_no << endl;
+				//cout << "With parent inode no: " << inode_no << endl;
+				//flag = true;
+				display_inode(subdirec_inode_no,sb,file,depth+1);
 			}
-			if(flag){
-				cout << "Exiting subdir" << endl;
-			}
-			*/
+			//if(flag){
+			//	cout << "Exiting subdir" << endl;
+			//}
 
 			offset += entry_length;
 		}
@@ -223,7 +244,7 @@ int read_core_structures(ifstream& file){
 	file.read(group_table,1024);
 
 	display_group_table(group_table,sb);
-	display_inode(2,sb);
+	display_inode(2,sb,file,0);
 	return 0;
 }
 
