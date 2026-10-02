@@ -24,12 +24,12 @@ struct Superblock{
 };
 
 struct group_descriptor{
-	uint32_t block_bitmap;
-	uint32_t inode_bitmap;
-	uint32_t inode_table;
-	uint32_t free_blocks;
-	uint32_t free_inodes;
-	uint32_t used_dirs;
+    uint32_t block_bitmap;
+    uint32_t inode_bitmap;
+    uint32_t inode_table;
+    uint32_t free_blocks;
+    uint32_t free_inodes;
+    uint32_t used_dirs;
 };
 
 struct inode{
@@ -41,7 +41,7 @@ struct inode{
 
 void process_directory_block(uint32_t block_number,Superblock sb,ifstream& file,int depth);
 int traverse_directory(int inode_no,Superblock sb,ifstream& file,int depth);
-
+void search_block(uint32_t block_number,Superblock sb,ifstream& file);
 
 uint32_t calculate_bytes(char* byte_start,int no_of_bytes){
 	uint32_t result = 0;
@@ -147,10 +147,10 @@ void process_directory_block(uint32_t block_number,Superblock sb,ifstream& file,
 		int subdirec_inode_no = calculate_bytes(direc_buffer+0+offset,4);
 		char name[name_length+1];
 
-		//handling no padding, empty entries and the double/single dot entries
-		if(entry_length==0){
-			break;
-		}
+		//handling unused entries and the double/single dot entries
+		//if(entry_length==0){
+		//	break;
+		//}
 		if(subdirec_inode_no==0){
 			offset += entry_length;
 			continue;
@@ -166,7 +166,11 @@ void process_directory_block(uint32_t block_number,Superblock sb,ifstream& file,
 			continue;
 		}
 
-
+		// Printing inode
+		for(int j = 0;j<depth;j++){
+			cout << "	";
+		}
+		cout << "Inode: " << subdirec_inode_no << endl;
 		// Printing Name
 		for(int j = 0;j<depth;j++){
 			cout << "	";
@@ -255,11 +259,11 @@ int traverse_directory(int inode_no,Superblock sb,ifstream& file,int depth){
 	if(root.block_pointers[12]!=0){
 		process_indirect_block(root.block_pointers[12],sb,file,depth,1);
 	}
-
+	//double indirect pointer
 	if(root.block_pointers[13]!=0){
 		process_indirect_block(root.block_pointers[13],sb,file,depth,2);
 	}
-
+	//triple indirect pointer
 	if(root.block_pointers[14]!=0){
 		process_indirect_block(root.block_pointers[14],sb,file,depth,3);
 	}
@@ -279,6 +283,109 @@ int read_core_structures(Superblock sb,ifstream& file){
 	file.read(group_table,1024);
 
 	display_group_table(group_table,sb);
+
+	return 0;
+}
+
+
+void search_indirect_block(uint32_t block_no,Superblock sb,ifstream& file,int level){
+
+	file.seekg(block_no*sb.block_size);
+	char buffer[sb.block_size];
+	file.read(buffer,sb.block_size);
+
+	for(int i = 0;i<(sb.block_size/4);i++){
+		uint32_t indirect_block_no = calculate_bytes(buffer+(4*i),4);
+		if(level == 1){
+			search_block(indirect_block_no,sb,file);
+		}
+		else{
+			search_indirect_block(indirect_block_no,sb,file,level-1);
+		}
+	}
+
+}
+
+void search_block(uint32_t block_number,Superblock sb,ifstream& file){
+
+	if(block_number==0){
+		return;
+	}
+	uint32_t offset = 0;
+	file.seekg(block_number*sb.block_size);
+	char direc_buffer[sb.block_size];
+	file.read(direc_buffer,sb.block_size);
+
+	while(offset<sb.block_size){
+
+		int name_length = calculate_bytes(direc_buffer+6+offset,1);
+		int entry_length = calculate_bytes(direc_buffer+4+offset,2);
+		int type = calculate_bytes(direc_buffer+7+offset,1);
+		int subdirec_inode_no = calculate_bytes(direc_buffer+0+offset,4);
+		char name[name_length+1];
+
+		if(type!=1){
+			offset += entry_length;
+			continue;
+		}
+
+		for(int j = 0;j<name_length;j++){
+			name[j] = calculate_bytes(direc_buffer+8+offset+j,1);
+		}
+		name[name_length] = '\0';
+		cout << "Name: " << name << endl;
+
+		offset += entry_length;
+	}
+
+	return;
+
+}
+
+
+int search_file(int cwd_inode_no,Superblock sb,ifstream& file){
+
+	file.seekg(2048);
+	char group_table[1024];
+	file.read(group_table,1024);
+
+	int block_group = ((cwd_inode_no-1)/sb.inodes_per_group);
+	group_descriptor gd = read_group_descriptor(group_table+(32*block_group));
+
+	int index = ((cwd_inode_no-1)%sb.inodes_per_group);
+	uint32_t byte_shift = (index*(sb.inode_size)) + (gd.inode_table)*(sb.block_size);
+
+	file.seekg(byte_shift);
+	char inode_buffer[sb.inode_size];
+	file.read(inode_buffer,sb.inode_size);
+
+	inode root;
+	root.mode = calculate_bytes(inode_buffer, 2);
+	root.size = calculate_bytes(inode_buffer + 4, 4);
+	root.blocks = calculate_bytes(inode_buffer + 28, 4);
+
+	for (int i = 0;i<15;i++) {
+    		root.block_pointers[i] = calculate_bytes(inode_buffer + 40 + i * 4, 4);
+	}
+
+	//direct pointers
+	for(int i = 0;i<12;i++){
+		search_block(root.block_pointers[i],sb,file);
+	}
+
+	/* indirect pointers */
+	//single indirect pointer
+	if(root.block_pointers[12]!=0){
+		search_indirect_block(root.block_pointers[12],sb,file,1);
+	}
+	//double indirect pointer
+	if(root.block_pointers[13]!=0){
+		search_indirect_block(root.block_pointers[13],sb,file,2);
+	}
+	//triple indirect pointer
+	if(root.block_pointers[14]!=0){
+		search_indirect_block(root.block_pointers[14],sb,file,3);
+	}
 
 	return 0;
 }
@@ -304,6 +411,8 @@ int main(){
 
 	read_core_structures(sb,file);
 	traverse_directory(2,sb,file,0);
+
+	search_file(13,sb,file);
 
 	return 0;
 }
