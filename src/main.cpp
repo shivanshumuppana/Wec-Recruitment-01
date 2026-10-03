@@ -4,6 +4,8 @@
 #include <cerrno>
 #include <string.h>
 #include <cmath>
+#include <string>
+#include <algorithm>
 using namespace std;
 
 struct Superblock{
@@ -40,8 +42,10 @@ struct inode{
 };
 
 void process_directory_block(uint32_t block_number,Superblock sb,ifstream& file,int depth);
-int traverse_directory(int inode_no,Superblock sb,ifstream& file,int depth);
-void search_block(uint32_t block_number,Superblock sb,ifstream& file);
+int traverse_directory(uint32_t inode_no,Superblock sb,ifstream& file,int depth);
+uint32_t search_block(uint32_t block_number,Superblock sb,ifstream& file,string key,int desired_type);
+uint32_t search_indirect_block(uint32_t block_no,Superblock sb,ifstream& file,int level,string key,int desired_type);
+uint32_t search(uint32_t inode_no,Superblock sb,ifstream& file,string key,int desired_type);
 
 uint32_t calculate_bytes(char* byte_start,int no_of_bytes){
 	uint32_t result = 0;
@@ -127,6 +131,35 @@ void display_superblock(Superblock sb){
 	cout << "Creator OS ID: " << sb.creator_os_id << endl;
 	cout << "First non-reserved inode: " << sb.first_non_reserved_inode << endl;
 	cout << endl;
+}
+
+inode process_inode(uint32_t inode_no,Superblock sb,ifstream& file){
+
+	file.seekg(2048);
+	char group_table[1024];
+	file.read(group_table,1024);
+
+	int block_group = ((inode_no-1)/sb.inodes_per_group);
+	group_descriptor gd = read_group_descriptor(group_table+(32*block_group));
+
+	int index = ((inode_no-1)%sb.inodes_per_group);
+	uint32_t byte_shift = (index*(sb.inode_size)) + (gd.inode_table)*(sb.block_size);
+
+	file.seekg(byte_shift);
+	char inode_buffer[sb.inode_size];
+	file.read(inode_buffer,sb.inode_size);
+
+	inode root;
+	root.mode = calculate_bytes(inode_buffer, 2);
+	root.size = calculate_bytes(inode_buffer + 4, 4);
+	root.blocks = calculate_bytes(inode_buffer + 28, 4);
+
+	for (int i = 0;i<15;i++) {
+    		root.block_pointers[i] = calculate_bytes(inode_buffer + 40 + i * 4, 4);
+	}
+
+	return root;
+
 }
 
 void process_directory_block(uint32_t block_number,Superblock sb,ifstream& file,int depth){
@@ -223,31 +256,9 @@ void process_indirect_block(uint32_t block_no,Superblock sb,ifstream& file,int d
 
 }
 
-int traverse_directory(int inode_no,Superblock sb,ifstream& file,int depth){
+int traverse_directory(uint32_t inode_no,Superblock sb,ifstream& file,int depth){
 
-	file.seekg(2048);
-	char group_table[1024];
-	file.read(group_table,1024);
-
-	int block_group = ((inode_no-1)/sb.inodes_per_group);
-	group_descriptor gd = read_group_descriptor(group_table+(32*block_group));
-
-	int index = ((inode_no-1)%sb.inodes_per_group);
-	uint32_t byte_shift = (index*(sb.inode_size)) + (gd.inode_table)*(sb.block_size);
-
-	file.seekg(byte_shift);
-	char inode_buffer[sb.inode_size];
-	file.read(inode_buffer,sb.inode_size);
-
-	inode root;
-	root.mode = calculate_bytes(inode_buffer, 2);
-	root.size = calculate_bytes(inode_buffer + 4, 4);
-	root.blocks = calculate_bytes(inode_buffer + 28, 4);
-
-	for (int i = 0;i<15;i++) {
-    		root.block_pointers[i] = calculate_bytes(inode_buffer + 40 + i * 4, 4);
-	}
-
+	inode root = process_inode(inode_no,sb,file);
 
 	//direct pointers
 	for(int i = 0;i<12;i++){
@@ -288,7 +299,7 @@ int read_core_structures(Superblock sb,ifstream& file){
 }
 
 
-void search_indirect_block(uint32_t block_no,Superblock sb,ifstream& file,int level){
+uint32_t search_indirect_block(uint32_t block_no,Superblock sb,ifstream& file,int level,char key[]){
 
 	file.seekg(block_no*sb.block_size);
 	char buffer[sb.block_size];
@@ -297,19 +308,19 @@ void search_indirect_block(uint32_t block_no,Superblock sb,ifstream& file,int le
 	for(int i = 0;i<(sb.block_size/4);i++){
 		uint32_t indirect_block_no = calculate_bytes(buffer+(4*i),4);
 		if(level == 1){
-			search_block(indirect_block_no,sb,file);
+			return search_block_for_file(indirect_block_no,sb,file,key);
 		}
 		else{
-			search_indirect_block(indirect_block_no,sb,file,level-1);
+			return search_indirect_block(indirect_block_no,sb,file,level-1,key);
 		}
 	}
-
+	return 0;
 }
 
-void search_block(uint32_t block_number,Superblock sb,ifstream& file){
+uint32_t search_block_for_file(uint32_t block_number,Superblock sb,ifstream& file,char key[]){
 
 	if(block_number==0){
-		return;
+		return 0;
 	}
 	uint32_t offset = 0;
 	file.seekg(block_number*sb.block_size);
@@ -324,7 +335,7 @@ void search_block(uint32_t block_number,Superblock sb,ifstream& file){
 		int subdirec_inode_no = calculate_bytes(direc_buffer+0+offset,4);
 		char name[name_length+1];
 
-		if(type!=1){
+		if(type!=1 || subdirec_inode_no==0){
 			offset += entry_length;
 			continue;
 		}
@@ -333,61 +344,205 @@ void search_block(uint32_t block_number,Superblock sb,ifstream& file){
 			name[j] = calculate_bytes(direc_buffer+8+offset+j,1);
 		}
 		name[name_length] = '\0';
-		cout << "Name: " << name << endl;
+		if(strcmp(key,name)==0){
+			cout << "Found a match." << endl;
+			cout << "Name: " << name << endl;
+			return subdirec_inode_no;
+		}
+		//cout << "Name: " << name << endl;
 
 		offset += entry_length;
 	}
 
-	return;
+	return 0;
 
 }
 
+uint32_t search_block_for_direc(uint32_t block_number,Superblock sb,ifstream& file,string key){
 
-int search_file(int cwd_inode_no,Superblock sb,ifstream& file){
+	if(block_number==0){
+		return 0;
+	}
+	uint32_t offset = 0;
+	file.seekg(block_number*sb.block_size);
+	char direc_buffer[sb.block_size];
+	file.read(direc_buffer,sb.block_size);
 
-	file.seekg(2048);
-	char group_table[1024];
-	file.read(group_table,1024);
+	while(offset<sb.block_size){
 
-	int block_group = ((cwd_inode_no-1)/sb.inodes_per_group);
-	group_descriptor gd = read_group_descriptor(group_table+(32*block_group));
+		int name_length = calculate_bytes(direc_buffer+6+offset,1);
+		int entry_length = calculate_bytes(direc_buffer+4+offset,2);
+		int type = calculate_bytes(direc_buffer+7+offset,1);
+		int subdirec_inode_no = calculate_bytes(direc_buffer+0+offset,4);
 
-	int index = ((cwd_inode_no-1)%sb.inodes_per_group);
-	uint32_t byte_shift = (index*(sb.inode_size)) + (gd.inode_table)*(sb.block_size);
+		if(type!=2 || subdirec_inode_no==0){
+			offset += entry_length;
+			continue;
+		}
 
-	file.seekg(byte_shift);
-	char inode_buffer[sb.inode_size];
-	file.read(inode_buffer,sb.inode_size);
+		string name(direc_buffer+8+offset,name_length);
 
-	inode root;
-	root.mode = calculate_bytes(inode_buffer, 2);
-	root.size = calculate_bytes(inode_buffer + 4, 4);
-	root.blocks = calculate_bytes(inode_buffer + 28, 4);
+		if(name==key){
+			cout << "Found a match." << endl;
+			cout << "Name: " << name << endl;
+			return subdirec_inode_no;
+		}
+		//cout << "Name: " << name << endl;
 
-	for (int i = 0;i<15;i++) {
-    		root.block_pointers[i] = calculate_bytes(inode_buffer + 40 + i * 4, 4);
+		offset += entry_length;
 	}
 
+	return 0;
+
+
+}
+
+uint32_t search_directory(uint32_t inode_no, Superblock sb,ifstream& file, string key){
+
+    inode dir_inode = process_inode(inode_no, sb, file);
+
+    uint32_t result;
+
+    // Direct blocks
+    for(int i = 0; i < 12; i++){
+        result = search_block_for_direc(dir_inode.block_pointers[i],sb,file,key);
+
+        if(result != 0){
+            return result;
+        }
+    }
+
+    // Single indirect
+    if(dir_inode.block_pointers[12] != 0){
+        result = search_indirect_directory(dir_inode.block_pointers[12],sb,file,1,key);
+
+        if(result != 0){
+            return result;
+        }
+    }
+
+    // Double indirect
+    if(dir_inode.block_pointers[13] != 0){
+        result = search_indirect_directory(dir_inode.block_pointers[13],sb,file,2,key);
+
+        if(result != 0){
+            return result;
+        }
+    }
+
+    // Triple indirect
+    if(dir_inode.block_pointers[14] != 0){
+
+        result = search_indirect_directory(dir_inode.block_pointers[14],sb,file,3,key);
+
+        if(result != 0){
+            return result;
+        }
+    }
+
+    return 0;
+}
+
+uint32_t search_file(uint32_t cwd_inode_no,Superblock sb,ifstream& file,char key[]){
+
+	inode root = process_inode(cwd_inode_no,sb,file);
+
+	uint32_t key_inode_no;
 	//direct pointers
 	for(int i = 0;i<12;i++){
-		search_block(root.block_pointers[i],sb,file);
+		if((key_inode_no = search_block_for_file(root.block_pointers[i],sb,file,key))!=0){
+			return key_inode_no;
+		}
 	}
 
 	/* indirect pointers */
 	//single indirect pointer
 	if(root.block_pointers[12]!=0){
-		search_indirect_block(root.block_pointers[12],sb,file,1);
+		if((key_inode_no = search_indirect_block(root.block_pointers[12],sb,file,1,key))!=0){
+			return key_inode_no;
+		}
 	}
 	//double indirect pointer
 	if(root.block_pointers[13]!=0){
-		search_indirect_block(root.block_pointers[13],sb,file,2);
+		if((key_inode_no = search_indirect_block(root.block_pointers[13],sb,file,2,key))!=0){
+			return key_inode_no;
+		}
 	}
 	//triple indirect pointer
 	if(root.block_pointers[14]!=0){
-		search_indirect_block(root.block_pointers[14],sb,file,3);
+		if((key_inode_no = search_indirect_block(root.block_pointers[14],sb,file,3,key))!=0){
+			return key_inode_no;
+		}
 	}
 
 	return 0;
+}
+
+
+uint32_t get_indirect_block(uint32_t block_no,Superblock sb,ifstream& file,uint32_t entry_capacity,int level,int index){
+	file.seekg(block_no*sb.block_size);
+	char buffer[sb.block_size];
+	file.read(buffer,sb.block_size);
+
+	uint32_t divisor = 1;
+	for(int i = 1;i<level;i++){
+		divisor *= entry_capacity;
+	}
+
+	uint32_t pointer_index = index / divisor;
+	uint32_t remaining_index = index % divisor;
+
+	uint32_t next_block = calculate_bytes(buffer + pointer_index*4,4);
+	if(next_block==0){
+		return 0;
+	}
+
+	if (level==1){
+		return next_block;
+	}
+	return get_indirect_block(next_block,sb,file,entry_capacity,level-1,remaining_index);
+
+}
+
+void print_file(uint32_t cwd_inode_no,Superblock sb,ifstream& file,char key[]){
+	uint32_t key_inode_no = search_file(cwd_inode_no,sb,file,key);
+	if(!key_inode_no){
+		cout << "File not found!" << endl;
+		return;
+	}
+
+	//go to file and process its blocks
+	inode key_inode = process_inode(key_inode_no,sb,file);
+	int data_blocks = ceil((float)key_inode.size/sb.block_size);
+	uint32_t entry_capacity = sb.block_size/4;
+	int index;
+
+	for(int i = 0;i<data_blocks;i++){
+		uint32_t block_no = 0;
+		if(i<12){
+			index = i-(0);
+			block_no = key_inode.block_pointers[i];
+		}
+		else if(i<(12+entry_capacity)){
+			index = i-(12);
+			block_no = get_indirect_block(key_inode.block_pointers[12],sb,file,entry_capacity,1,index);
+		}
+		else if(i<(12+entry_capacity+entry_capacity*entry_capacity)){
+			index = i-(12+entry_capacity);
+			block_no = get_indirect_block(key_inode.block_pointers[13],sb,file,entry_capacity,2,index);
+		}
+		else{
+			index = i-(12+entry_capacity+entry_capacity*entry_capacity);
+			block_no = get_indirect_block(key_inode.block_pointers[14],sb,file,entry_capacity,3,index);
+		}
+
+		if(block_no==0){
+			continue;
+		}
+
+		//read from block = block_no
+	}
+
 }
 
 int main(){
@@ -409,10 +564,52 @@ int main(){
 	Superblock sb;
 	sb = process_superblock(bing);
 
-	read_core_structures(sb,file);
-	traverse_directory(2,sb,file,0);
+	int current_inode = 2;
+	string command;
 
-	search_file(13,sb,file);
+	while(true){
+		cout << "prompt> ";
+		cin >> command;
+
+		if(command=="exit"){
+			break;
+		}
+
+		else if(command=="info"){
+			read_core_structures(sb,file);
+		}
+
+		else if(command=="traverse"){
+			traverse_directory(2,sb,file,0);
+		}
+
+		else if(command=="cd"){
+			string target;
+			cin >> target;
+
+			uint32_t temp_inode_no = search_block_for_direc(current_inode,sb,file,target);
+			if(temp_inode_no==0){
+				cout << "Can't find said directory." << endl;
+				continue;
+			}
+			current_inode = temp_inode_no;
+			//check current inode for target
+		}
+
+		else if(command=="pwd"){
+			//print current working directory
+		}
+
+		else if(command=="read"){
+			string filename;
+			cin >> filename;
+		}
+
+		else{
+			cout << "Unknown command\n" << endl;
+		}
+
+	}
 
 	return 0;
 }
