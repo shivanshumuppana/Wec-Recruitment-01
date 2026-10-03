@@ -5,6 +5,7 @@
 #include <string.h>
 #include <cmath>
 #include <string>
+#include <vector>
 #include <algorithm>
 using namespace std;
 
@@ -178,6 +179,9 @@ void process_directory_block(uint32_t block_number,Superblock sb,ifstream& file,
 		int entry_length = calculate_bytes(direc_buffer+4+offset,2);
 		int type = calculate_bytes(direc_buffer+7+offset,1);
 		int subdirec_inode_no = calculate_bytes(direc_buffer+0+offset,4);
+		if(entry_length < 8){
+			break;
+		}
 		char name[name_length+1];
 
 		//handling unused entries and the double/single dot entries
@@ -240,6 +244,10 @@ void process_directory_block(uint32_t block_number,Superblock sb,ifstream& file,
 
 void process_indirect_block(uint32_t block_no,Superblock sb,ifstream& file,int depth,int level){
 
+	if(block_no==0){
+		return;
+	}
+
 	file.seekg(block_no*sb.block_size);
 	char buffer[sb.block_size];
 	file.read(buffer,sb.block_size);
@@ -299,113 +307,66 @@ int read_core_structures(Superblock sb,ifstream& file){
 }
 
 
-uint32_t search_indirect_block(uint32_t block_no,Superblock sb,ifstream& file,int level,char key[]){
+uint32_t search_block(uint32_t block_number,Superblock sb,ifstream& file,string key,int desired_type){
 
-	file.seekg(block_no*sb.block_size);
-	char buffer[sb.block_size];
-	file.read(buffer,sb.block_size);
+    if(block_number == 0){
+        return 0;
+    }
 
-	for(int i = 0;i<(sb.block_size/4);i++){
-		uint32_t indirect_block_no = calculate_bytes(buffer+(4*i),4);
-		if(level == 1){
-			return search_block_for_file(indirect_block_no,sb,file,key);
-		}
-		else{
-			return search_indirect_block(indirect_block_no,sb,file,level-1,key);
-		}
-	}
-	return 0;
+    uint32_t offset = 0;
+
+    file.seekg(block_number * sb.block_size);
+
+    char direc_buffer[sb.block_size];
+
+    file.read(direc_buffer, sb.block_size);
+
+    while(offset < sb.block_size){
+
+        int name_length =
+            calculate_bytes(direc_buffer + 6 + offset, 1);
+
+        int entry_length =
+            calculate_bytes(direc_buffer + 4 + offset, 2);
+
+        int type =
+            calculate_bytes(direc_buffer + 7 + offset, 1);
+
+        uint32_t inode_no =
+            calculate_bytes(direc_buffer + offset, 4);
+
+	// corrupt/zero rec_len would loop forever
+        if(entry_length < 8 || offset + entry_length > sb.block_size){
+            break;
+        }
+
+        if(type != desired_type || inode_no == 0){
+            offset += entry_length;
+            continue;
+        }
+
+        string name(direc_buffer + 8 + offset,name_length);
+
+        if(name == key){
+            return inode_no;
+        }
+
+        offset += entry_length;
+    }
+
+    return 0;
 }
 
-uint32_t search_block_for_file(uint32_t block_number,Superblock sb,ifstream& file,char key[]){
+uint32_t search(uint32_t cwd_inode_no,Superblock sb,ifstream& file,string key,int desired_type){
 
-	if(block_number==0){
-		return 0;
-	}
-	uint32_t offset = 0;
-	file.seekg(block_number*sb.block_size);
-	char direc_buffer[sb.block_size];
-	file.read(direc_buffer,sb.block_size);
-
-	while(offset<sb.block_size){
-
-		int name_length = calculate_bytes(direc_buffer+6+offset,1);
-		int entry_length = calculate_bytes(direc_buffer+4+offset,2);
-		int type = calculate_bytes(direc_buffer+7+offset,1);
-		int subdirec_inode_no = calculate_bytes(direc_buffer+0+offset,4);
-		char name[name_length+1];
-
-		if(type!=1 || subdirec_inode_no==0){
-			offset += entry_length;
-			continue;
-		}
-
-		for(int j = 0;j<name_length;j++){
-			name[j] = calculate_bytes(direc_buffer+8+offset+j,1);
-		}
-		name[name_length] = '\0';
-		if(strcmp(key,name)==0){
-			cout << "Found a match." << endl;
-			cout << "Name: " << name << endl;
-			return subdirec_inode_no;
-		}
-		//cout << "Name: " << name << endl;
-
-		offset += entry_length;
-	}
-
-	return 0;
-
-}
-
-uint32_t search_block_for_direc(uint32_t block_number,Superblock sb,ifstream& file,string key){
-
-	if(block_number==0){
-		return 0;
-	}
-	uint32_t offset = 0;
-	file.seekg(block_number*sb.block_size);
-	char direc_buffer[sb.block_size];
-	file.read(direc_buffer,sb.block_size);
-
-	while(offset<sb.block_size){
-
-		int name_length = calculate_bytes(direc_buffer+6+offset,1);
-		int entry_length = calculate_bytes(direc_buffer+4+offset,2);
-		int type = calculate_bytes(direc_buffer+7+offset,1);
-		int subdirec_inode_no = calculate_bytes(direc_buffer+0+offset,4);
-
-		if(type!=2 || subdirec_inode_no==0){
-			offset += entry_length;
-			continue;
-		}
-
-		string name(direc_buffer+8+offset,name_length);
-
-		if(name==key){
-			cout << "Found a match." << endl;
-			cout << "Name: " << name << endl;
-			return subdirec_inode_no;
-		}
-		//cout << "Name: " << name << endl;
-
-		offset += entry_length;
-	}
-
-	return 0;
-
-
-}
-
-uint32_t search_directory(uint32_t inode_no, Superblock sb,ifstream& file, string key){
-
-    inode dir_inode = process_inode(inode_no, sb, file);
+    inode cwd_inode = process_inode(cwd_inode_no, sb, file);
 
     uint32_t result;
 
     // Direct blocks
     for(int i = 0; i < 12; i++){
-        result = search_block_for_direc(dir_inode.block_pointers[i],sb,file,key);
+
+        result = search_block(cwd_inode.block_pointers[i],sb,file,key,desired_type);
 
         if(result != 0){
             return result;
@@ -413,8 +374,9 @@ uint32_t search_directory(uint32_t inode_no, Superblock sb,ifstream& file, strin
     }
 
     // Single indirect
-    if(dir_inode.block_pointers[12] != 0){
-        result = search_indirect_directory(dir_inode.block_pointers[12],sb,file,1,key);
+    if(cwd_inode.block_pointers[12] != 0){
+
+        result = search_indirect_block(cwd_inode.block_pointers[12],sb,file,1,key,desired_type);
 
         if(result != 0){
             return result;
@@ -422,8 +384,9 @@ uint32_t search_directory(uint32_t inode_no, Superblock sb,ifstream& file, strin
     }
 
     // Double indirect
-    if(dir_inode.block_pointers[13] != 0){
-        result = search_indirect_directory(dir_inode.block_pointers[13],sb,file,2,key);
+    if(cwd_inode.block_pointers[13] != 0){
+
+        result = search_indirect_block(cwd_inode.block_pointers[13],sb,file,2,key,desired_type);
 
         if(result != 0){
             return result;
@@ -431,9 +394,9 @@ uint32_t search_directory(uint32_t inode_no, Superblock sb,ifstream& file, strin
     }
 
     // Triple indirect
-    if(dir_inode.block_pointers[14] != 0){
+    if(cwd_inode.block_pointers[14] != 0){
 
-        result = search_indirect_directory(dir_inode.block_pointers[14],sb,file,3,key);
+        result = search_indirect_block(cwd_inode.block_pointers[14],sb,file,3,key,desired_type);
 
         if(result != 0){
             return result;
@@ -443,69 +406,70 @@ uint32_t search_directory(uint32_t inode_no, Superblock sb,ifstream& file, strin
     return 0;
 }
 
-uint32_t search_file(uint32_t cwd_inode_no,Superblock sb,ifstream& file,char key[]){
+uint32_t search_indirect_block(uint32_t block_no,Superblock sb,ifstream& file,int level,string key,int desired_type){
 
-	inode root = process_inode(cwd_inode_no,sb,file);
+    if(block_no == 0){
+        return 0;
+    }
 
-	uint32_t key_inode_no;
-	//direct pointers
-	for(int i = 0;i<12;i++){
-		if((key_inode_no = search_block_for_file(root.block_pointers[i],sb,file,key))!=0){
-			return key_inode_no;
-		}
-	}
+    file.seekg(block_no * sb.block_size);
 
-	/* indirect pointers */
-	//single indirect pointer
-	if(root.block_pointers[12]!=0){
-		if((key_inode_no = search_indirect_block(root.block_pointers[12],sb,file,1,key))!=0){
-			return key_inode_no;
-		}
-	}
-	//double indirect pointer
-	if(root.block_pointers[13]!=0){
-		if((key_inode_no = search_indirect_block(root.block_pointers[13],sb,file,2,key))!=0){
-			return key_inode_no;
-		}
-	}
-	//triple indirect pointer
-	if(root.block_pointers[14]!=0){
-		if((key_inode_no = search_indirect_block(root.block_pointers[14],sb,file,3,key))!=0){
-			return key_inode_no;
-		}
-	}
+    char buffer[sb.block_size];
 
-	return 0;
+    file.read(buffer, sb.block_size);
+
+    for(int i = 0; i<(sb.block_size/4); i++){
+
+        uint32_t next_block = calculate_bytes(buffer + 4 * i, 4);
+
+        if(next_block == 0){
+            continue;
+        }
+
+        uint32_t result;
+
+        if(level == 1){
+            result = search_block(next_block,sb,file,key,desired_type);
+
+        }
+        else{
+
+            result = search_indirect_block(next_block,sb,file,level - 1,key,desired_type);
+        }
+
+        if(result != 0){
+            return result;
+        }
+    }
+
+    return 0;
 }
 
+uint32_t get_indirect_block(uint32_t block_no,Superblock sb,ifstream& file,uint32_t entry_capacity,int level,uint32_t index){
 
-uint32_t get_indirect_block(uint32_t block_no,Superblock sb,ifstream& file,uint32_t entry_capacity,int level,int index){
+	if(block_no==0){
+		return 0;
+	}
+
+	uint32_t span = 1;
+	for(int i = 1;i<level;i++){
+		span *= entry_capacity;
+	}
+
 	file.seekg(block_no*sb.block_size);
 	char buffer[sb.block_size];
 	file.read(buffer,sb.block_size);
 
-	uint32_t divisor = 1;
-	for(int i = 1;i<level;i++){
-		divisor *= entry_capacity;
+	uint32_t next = calculate_bytes(buffer+4*(index/span),4);
+
+	if(level==1){
+		return next;
 	}
-
-	uint32_t pointer_index = index / divisor;
-	uint32_t remaining_index = index % divisor;
-
-	uint32_t next_block = calculate_bytes(buffer + pointer_index*4,4);
-	if(next_block==0){
-		return 0;
-	}
-
-	if (level==1){
-		return next_block;
-	}
-	return get_indirect_block(next_block,sb,file,entry_capacity,level-1,remaining_index);
-
+	return get_indirect_block(next,sb,file,entry_capacity,level-1,index%span);
 }
 
-void print_file(uint32_t cwd_inode_no,Superblock sb,ifstream& file,char key[]){
-	uint32_t key_inode_no = search_file(cwd_inode_no,sb,file,key);
+void print_file(uint32_t cwd_inode_no,Superblock sb,ifstream& file,string key){
+	uint32_t key_inode_no = search(cwd_inode_no,sb,file,key,1);
 	if(!key_inode_no){
 		cout << "File not found!" << endl;
 		return;
@@ -513,7 +477,7 @@ void print_file(uint32_t cwd_inode_no,Superblock sb,ifstream& file,char key[]){
 
 	//go to file and process its blocks
 	inode key_inode = process_inode(key_inode_no,sb,file);
-	int data_blocks = ceil((float)key_inode.size/sb.block_size);
+	int data_blocks = (key_inode.size + sb.block_size - 1)/sb.block_size;
 	uint32_t entry_capacity = sb.block_size/4;
 	int index;
 
@@ -540,7 +504,7 @@ void print_file(uint32_t cwd_inode_no,Superblock sb,ifstream& file,char key[]){
 			continue;
 		}
 
-		//read from block = block_no
+		//write min(block_size, size - i*block_size) bytes (implementation of reading the content of file is yet to be done)
 	}
 
 }
@@ -564,13 +528,13 @@ int main(){
 	Superblock sb;
 	sb = process_superblock(bing);
 
-	int current_inode = 2;
+	uint32_t current_inode = 2;
+	vector<string> current_path;
 	string command;
 
 	while(true){
 		cout << "prompt> ";
 		cin >> command;
-
 		if(command=="exit"){
 			break;
 		}
@@ -587,22 +551,40 @@ int main(){
 			string target;
 			cin >> target;
 
-			uint32_t temp_inode_no = search_block_for_direc(current_inode,sb,file,target);
+			uint32_t temp_inode_no = search(current_inode,sb,file,target,2);
 			if(temp_inode_no==0){
 				cout << "Can't find said directory." << endl;
 				continue;
 			}
 			current_inode = temp_inode_no;
-			//check current inode for target
+
+			if(target==".."){
+				if(!current_path.empty()){
+					current_path.pop_back();
+				}
+			}
+			else if(target!="."){
+				current_path.push_back(target);
+			}
 		}
 
 		else if(command=="pwd"){
-			//print current working directory
-		}
+			cout << "/";
 
+			for(int i = 0;i<current_path.size();i++){
+				cout << current_path[i];
+				if(i!=current_path.size()-1){
+					cout << "/";
+				}
+			}
+
+			cout << endl;
+		}
 		else if(command=="read"){
 			string filename;
 			cin >> filename;
+
+			print_file(current_inode,sb,file,filename);
 		}
 
 		else{
@@ -613,4 +595,3 @@ int main(){
 
 	return 0;
 }
-
