@@ -9,6 +9,8 @@
 #include <algorithm>
 using namespace std;
 
+
+/* Structures and function signatures */
 struct Superblock{
     uint32_t total_inodes;
     uint32_t total_blocks;
@@ -42,12 +44,13 @@ struct inode{
     uint32_t block_pointers[15];
 };
 
-void process_directory_block(uint32_t block_number,Superblock sb,ifstream& file,int depth);
-int traverse_directory(uint32_t inode_no,Superblock sb,ifstream& file,int depth);
-uint32_t search_block(uint32_t block_number,Superblock sb,ifstream& file,string key,int desired_type);
-uint32_t search_indirect_block(uint32_t block_no,Superblock sb,ifstream& file,int level,string key,int desired_type);
-uint32_t search(uint32_t inode_no,Superblock sb,ifstream& file,string key,int desired_type);
+void process_directory_block(uint32_t block_number,Superblock sb,fstream& file,int depth);
+int traverse_directory(uint32_t inode_no,Superblock sb,fstream& file,int depth);
+uint32_t search_block(uint32_t block_number,Superblock sb,fstream& file,string key,int desired_type);
+uint32_t search_indirect_block(uint32_t block_no,Superblock sb,fstream& file,int level,string key,int desired_type);
+uint32_t search(uint32_t inode_no,Superblock sb,fstream& file,string key,int desired_type);
 
+/* Basic functions */
 uint32_t calculate_bytes(char* byte_start,int no_of_bytes){
 	uint32_t result = 0;
 
@@ -134,11 +137,11 @@ void display_superblock(Superblock sb){
 	cout << endl;
 }
 
-inode process_inode(uint32_t inode_no,Superblock sb,ifstream& file){
+inode process_inode(uint32_t inode_no,Superblock sb,fstream& file){
 
 	file.seekg(2048);
-	char group_table[1024];
-	file.read(group_table,1024);
+	char group_table[sb.block_size];
+	file.read(group_table,sb.block_size);
 
 	int block_group = ((inode_no-1)/sb.inodes_per_group);
 	group_descriptor gd = read_group_descriptor(group_table+(32*block_group));
@@ -163,7 +166,8 @@ inode process_inode(uint32_t inode_no,Superblock sb,ifstream& file){
 
 }
 
-void process_directory_block(uint32_t block_number,Superblock sb,ifstream& file,int depth){
+/* Traversing */
+void process_directory_block(uint32_t block_number,Superblock sb,fstream& file,int depth){
 
 	if(block_number==0){
 		return;
@@ -242,7 +246,7 @@ void process_directory_block(uint32_t block_number,Superblock sb,ifstream& file,
 
 }
 
-void process_indirect_block(uint32_t block_no,Superblock sb,ifstream& file,int depth,int level){
+void process_indirect_block(uint32_t block_no,Superblock sb,fstream& file,int depth,int level){
 
 	if(block_no==0){
 		return;
@@ -264,7 +268,7 @@ void process_indirect_block(uint32_t block_no,Superblock sb,ifstream& file,int d
 
 }
 
-int traverse_directory(uint32_t inode_no,Superblock sb,ifstream& file,int depth){
+int traverse_directory(uint32_t inode_no,Superblock sb,fstream& file,int depth){
 
 	inode root = process_inode(inode_no,sb,file);
 
@@ -291,15 +295,15 @@ int traverse_directory(uint32_t inode_no,Superblock sb,ifstream& file,int depth)
 }
 
 
-int read_core_structures(Superblock sb,ifstream& file){
+int read_core_structures(Superblock sb,fstream& file){
 
 	//print superblock
 	display_superblock(sb);
 
 	//print group descriptor table
 	file.seekg(2048);
-	char group_table[1024];
-	file.read(group_table,1024);
+	char group_table[sb.block_size];
+	file.read(group_table,sb.block_size);
 
 	display_group_table(group_table,sb);
 
@@ -307,7 +311,8 @@ int read_core_structures(Superblock sb,ifstream& file){
 }
 
 
-uint32_t search_block(uint32_t block_number,Superblock sb,ifstream& file,string key,int desired_type){
+/* Locating & Reading a particular file's content */
+uint32_t search_block(uint32_t block_number,Superblock sb,fstream& file,string key,int desired_type){
 
     if(block_number == 0){
         return 0;
@@ -323,17 +328,13 @@ uint32_t search_block(uint32_t block_number,Superblock sb,ifstream& file,string 
 
     while(offset < sb.block_size){
 
-        int name_length =
-            calculate_bytes(direc_buffer + 6 + offset, 1);
+        int name_length = calculate_bytes(direc_buffer + 6 + offset, 1);
 
-        int entry_length =
-            calculate_bytes(direc_buffer + 4 + offset, 2);
+        int entry_length = calculate_bytes(direc_buffer + 4 + offset, 2);
 
-        int type =
-            calculate_bytes(direc_buffer + 7 + offset, 1);
+        int type = calculate_bytes(direc_buffer + 7 + offset, 1);
 
-        uint32_t inode_no =
-            calculate_bytes(direc_buffer + offset, 4);
+        uint32_t inode_no = calculate_bytes(direc_buffer + offset, 4);
 
 	// corrupt/zero rec_len would loop forever
         if(entry_length < 8 || offset + entry_length > sb.block_size){
@@ -357,7 +358,7 @@ uint32_t search_block(uint32_t block_number,Superblock sb,ifstream& file,string 
     return 0;
 }
 
-uint32_t search(uint32_t cwd_inode_no,Superblock sb,ifstream& file,string key,int desired_type){
+uint32_t search(uint32_t cwd_inode_no,Superblock sb,fstream& file,string key,int desired_type){
 
     inode cwd_inode = process_inode(cwd_inode_no, sb, file);
 
@@ -406,7 +407,7 @@ uint32_t search(uint32_t cwd_inode_no,Superblock sb,ifstream& file,string key,in
     return 0;
 }
 
-uint32_t search_indirect_block(uint32_t block_no,Superblock sb,ifstream& file,int level,string key,int desired_type){
+uint32_t search_indirect_block(uint32_t block_no,Superblock sb,fstream& file,int level,string key,int desired_type){
 
     if(block_no == 0){
         return 0;
@@ -445,7 +446,7 @@ uint32_t search_indirect_block(uint32_t block_no,Superblock sb,ifstream& file,in
     return 0;
 }
 
-uint32_t get_indirect_block(uint32_t block_no,Superblock sb,ifstream& file,uint32_t entry_capacity,int level,uint32_t index){
+uint32_t get_indirect_block(uint32_t block_no,Superblock sb,fstream& file,uint32_t entry_capacity,int level,uint32_t index){
 
 	if(block_no==0){
 		return 0;
@@ -468,7 +469,7 @@ uint32_t get_indirect_block(uint32_t block_no,Superblock sb,ifstream& file,uint3
 	return get_indirect_block(next,sb,file,entry_capacity,level-1,index%span);
 }
 
-void print_file(uint32_t cwd_inode_no,Superblock sb,ifstream& file,string key){
+void print_file(uint32_t cwd_inode_no,Superblock sb,fstream& file,string key){
 	uint32_t key_inode_no = search(cwd_inode_no,sb,file,key,1);
 	if(!key_inode_no){
 		cout << "File not found!" << endl;
@@ -509,9 +510,105 @@ void print_file(uint32_t cwd_inode_no,Superblock sb,ifstream& file,string key){
 
 }
 
+/* Update existing files */
+void write_inode(uint32_t inode_no,Superblock sb,fstream& file){
+
+}
+vector<char> read_input_file(string filename){
+
+	ifstream input(filename,ios::binary);
+
+	if(!input){
+		cout << "Failed to open file!" << endl;
+		return {};
+	}
+
+	vector<char> data;
+	char byte;
+	while(input.get(byte)){
+		data.push_back(byte);
+	}
+
+	return data;
+}
+
+void overwrite_file(uint32_t cwd_inode,string filename,string input_filename,Superblock sb,fstream& file){
+	vector<char> data = read_input_file(input_filename);
+
+	uint32_t inode_no = search(cwd_inode,sb,file,filename,1);
+
+	if(inode_no==0){
+		cout << "File not found!" << endl;
+		return;
+	}
+
+	inode target = process_inode(inode_no,sb,file);
+
+	int old_blocks = ceil(((float)target.size)/sb.block_size);
+	int new_blocks = ceil(((float)data.size())/sb.block_size);
+
+	return;
+}
+
+void append(uint32_t cwd_inode,string filename,string input_filename,Superblock sb, fstream& file){
+	vector<char> data = read_input_file(input_filename);
+
+	uint32_t inode_no = search(cwd_inode,sb,file,filename,1);
+
+	if(inode_no==0){
+		cout << "File not found!" << endl;
+		return;
+	}
+
+	inode target = process_inode(inode_no,sb,file);
+
+	int old_blocks = ceil(((float)target.size)/sb.block_size);
+	int new_blocks = ceil(((float)data.size())/sb.block_size);
+
+	return;
+}
+
+vector<uint32_t> allocate_blocks(int no_of_blocks,uint32_t inode_no,Superblock sb,fstream& file){
+	vector<uint32_t> block_numbers = {};
+
+	int block_group = (inode_no-1)/sb.inodes_per_group;
+
+	file.seekg(2048);
+	char buffer[sb.block_size];
+	file.read(buffer,sb.block_size);
+
+	group_descriptor gd = read_group_descriptor(buffer+(32*block_group));
+	file.seekg(gd.block_bitmap*sb.block_size);
+	unsigned char bitmap[sb.block_size];
+	file.read((char*)bitmap,sb.block_size);
+
+
+	for(int i = 0;i<sb.blocks_per_group;i++){
+		int byte_index = i/8;
+		int bit_index = i%8;
+
+		int allocated = (bitmap[byte_index]>>bit_index) & 1;
+
+		if(!allocated){
+			bitmap[byte_index] = bitmap[byte_index] | (1 << bit_index);
+
+			uint32_t block_number = block_group*sb.blocks_per_group + i;
+			block_numbers.push_back(block_number);
+
+			if(block_numbers.size()==no_of_blocks){
+				break;
+			}
+		}
+	}
+	//file.seekp(gd.block_bitmap*sb.block_size);
+	//file.write((char*)bitmap,sb.block_size);
+
+	return block_numbers;
+}
+
 int main(){
 
-	ifstream file("/home/shivanshu_muppana/disk_proj/disk-backpup.img",ios::binary);
+	fstream file("/home/shivanshu_muppana/disk_proj/disk-backpup.img",ios::in | ios::out | ios::binary);
 
 	//if error
 	if(!file){
@@ -577,7 +674,6 @@ int main(){
 					cout << "/";
 				}
 			}
-
 			cout << endl;
 		}
 		else if(command=="read"){
@@ -586,12 +682,29 @@ int main(){
 
 			print_file(current_inode,sb,file,filename);
 		}
+		else if(command=="write"){
+			string filename;
+			string input_filename;
 
+			cin >> filename;
+			cin >> input_filename;
+
+			//overwrite
+		}
+		else if(command=="append"){
+			string filename;
+			string input_filename;
+
+			cin >> filename;
+			cin >> input_filename;
+
+			//append
+		}
 		else{
 			cout << "Unknown command\n" << endl;
 		}
-
 	}
+
 
 	return 0;
 }
