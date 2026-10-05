@@ -44,17 +44,27 @@ struct inode{
     uint32_t block_pointers[15];
 };
 
+struct AllocationState{
+	vector<unsigned char> bitmap;
+	uint32_t bitmap_block;
+	int block_group;
+	vector<uint32_t> freed_blocks;
+	vector<uint32_t> allocated_blocks;
+};
+
 void process_directory_block(uint32_t block_number,Superblock sb,fstream& file,int depth);
 int traverse_directory(uint32_t inode_no,Superblock sb,fstream& file,int depth);
 uint32_t search_block(uint32_t block_number,Superblock sb,fstream& file,string key,int desired_type);
 uint32_t search_indirect_block(uint32_t block_no,Superblock sb,fstream& file,int level,string key,int desired_type);
 uint32_t search(uint32_t inode_no,Superblock sb,fstream& file,string key,int desired_type);
-void fill_indirect(uint32_t &block_no,int level,vector<uint32_t>& new_blocks,int& j,Superblock sb, fstream& file,uint32_t inode_no);
-vector<uint32_t> allocate_blocks(int no_of_blocks,uint32_t inode_no,Superblock sb,fstream& file);
+void fill_indirect(uint32_t &block_no,int level,vector<uint32_t>& new_blocks,int& j,Superblock sb, fstream& file,uint32_t inode_no,AllocationState& state);
+vector<uint32_t> allocate_blocks(int no_of_blocks,uint32_t inode_no,Superblock sb,fstream& file,AllocationState& state);
 vector<uint32_t> get_data_blocks(inode target,Superblock sb,fstream& file);
-void write_inode(uint32_t inode_no,vector<uint32_t> final_data_blocks,uint32_t new_size,Superblock sb,fstream& file);
+void write_inode(uint32_t inode_no,vector<uint32_t> final_data_blocks,uint32_t new_size,Superblock sb,fstream& file,AllocationState& state);
 void write_data(vector<char>& data,vector<uint32_t>& data_blocks,Superblock sb,fstream& file);
 vector<uint32_t> get_blocks_to_free(vector<uint32_t>& old_blocks,int new_block_count);
+void free_blocks(vector<uint32_t>& blocks,AllocationState& state,Superblock sb,fstream& file);
+void commit_allocation_state(AllocationState& state,Superblock& sb,fstream& file);
 
 /* Basic functions */
 uint32_t calculate_bytes(char* byte_start,int no_of_bytes){
@@ -517,9 +527,28 @@ void print_file(uint32_t cwd_inode_no,Superblock sb,fstream& file,string key){
 	//go to file and process its blocks
 	inode key_inode = process_inode(key_inode_no,sb,file);
 	vector<uint32_t> data_blocks = get_data_blocks(key_inode,sb,file);
+	uint32_t bytes_remaining = key_inode.size;
 
 	for(uint32_t block_no : data_blocks){
 		//write min(block_size, size - i*block_size) bytes (implementation of reading the content of file is yet to be done)
+		uint32_t bytes_to_read = min((uint32_t)sb.block_size,bytes_remaining);
+
+		char buffer[sb.block_size];
+
+		file.seekg(block_no*sb.block_size);
+		file.read(buffer,bytes_to_read);
+
+		cout.write(buffer,bytes_to_read);
+
+		bytes_remaining -= bytes_to_read;
+
+		if(bytes_remaining==0){
+			cout << endl;
+			break;
+		}
+
+		cout << endl;
+
 	}
 
 }
@@ -560,7 +589,7 @@ int count_indirect_blocks(int data_blocks,Superblock sb){
 	return extra_blocks;
 }
 
-void write_inode(uint32_t inode_no,vector<uint32_t> final_data_blocks,uint32_t new_size,Superblock sb,fstream& file){
+void write_inode(uint32_t inode_no,vector<uint32_t> final_data_blocks,uint32_t new_size,Superblock sb,fstream& file,AllocationState& state){
 	int block_group = (inode_no-1)/sb.inodes_per_group;
 	int index = (inode_no-1)%sb.inodes_per_group;
 
@@ -574,16 +603,20 @@ void write_inode(uint32_t inode_no,vector<uint32_t> final_data_blocks,uint32_t n
 	file.seekg(byte_offset);
 	file.read(inode_buffer,sb.inode_size);
 
+	//clear
+	for(int i = 0;i<12;i++){
+		for(int k = 0;k<4;k++){
+			inode_buffer[40+i*4+k] = 0;
+		}
+	}
+
 	//direct pointer
 	int j = 0;
 	for(int i = 0;i<12 && j<final_data_blocks.size();i++){
-		uint32_t current_block = calculate_bytes(inode_buffer+40+i*4,4);
-		if(current_block==0){
-			uint32_t new_block = final_data_blocks[j++];
+		uint32_t new_block = final_data_blocks[j++];
 
-			for(int k = 0;k<4;k++){
-				inode_buffer[40+i*4+k] = (new_block>>(8*k)) & 0xFF;
-			}
+		for(int k = 0;k<4;k++){
+			inode_buffer[40+i*4+k] = (new_block>>(8*k)) & 0xFF;
 		}
 	}
 
@@ -591,7 +624,7 @@ void write_inode(uint32_t inode_no,vector<uint32_t> final_data_blocks,uint32_t n
 	if(j<final_data_blocks.size()){
 		uint32_t block_no = calculate_bytes(inode_buffer+40+12*4,4);
 
-		fill_indirect(block_no,1,final_data_blocks,j,sb,file,inode_no);
+		fill_indirect(block_no,1,final_data_blocks,j,sb,file,inode_no,state);
 
 		for(int k = 0;k<4;k++){
 			inode_buffer[40+12*4+k] = (block_no>>(8*k)) & 0xFF;
@@ -602,7 +635,7 @@ void write_inode(uint32_t inode_no,vector<uint32_t> final_data_blocks,uint32_t n
 	if(j<final_data_blocks.size()){
 		uint32_t block_no = calculate_bytes(inode_buffer+40+13*4,4);
 
-		fill_indirect(block_no,2,final_data_blocks,j,sb,file,inode_no);
+		fill_indirect(block_no,2,final_data_blocks,j,sb,file,inode_no,state);
 
 		for(int k = 0;k<4;k++){
 			inode_buffer[40+13*4+k] = (block_no>>(8*k)) & 0xFF;
@@ -613,7 +646,7 @@ void write_inode(uint32_t inode_no,vector<uint32_t> final_data_blocks,uint32_t n
 	if(j<final_data_blocks.size()){
 		uint32_t block_no = calculate_bytes(inode_buffer+40+14*4,4);
 
-		fill_indirect(block_no,3,final_data_blocks,j,sb,file,inode_no);
+		fill_indirect(block_no,3,final_data_blocks,j,sb,file,inode_no,state);
 
 		for(int k = 0;k<4;k++){
 			inode_buffer[40+14*4+k] = (block_no>>(8*k)) & 0xFF;
@@ -635,18 +668,18 @@ void write_inode(uint32_t inode_no,vector<uint32_t> final_data_blocks,uint32_t n
 		inode_buffer[28 + k] = (new_i_blocks >> (8*k)) & 0xFF;
 	}
 
-	//file.seekp(byte_offset);
-	//file.write(inode_buffer,sb.inode_size);
+	file.seekp(byte_offset);
+	file.write(inode_buffer,sb.inode_size);
 
 }
 
-void fill_indirect(uint32_t &block_no,int level,vector<uint32_t>& new_blocks,int& j,Superblock sb, fstream& file,uint32_t inode_no){
+void fill_indirect(uint32_t &block_no,int level,vector<uint32_t>& new_blocks,int& j,Superblock sb, fstream& file,uint32_t inode_no,AllocationState& state){
 	if(j>=new_blocks.size()){
 		return;
 	}
 
 	if(block_no==0){
-		vector<uint32_t> temp = allocate_blocks(1,inode_no,sb,file);
+		vector<uint32_t> temp = allocate_blocks(1,inode_no,sb,file,state);
 
 		if(temp.empty()){
 			return;
@@ -679,7 +712,7 @@ void fill_indirect(uint32_t &block_no,int level,vector<uint32_t>& new_blocks,int
 			}
 		}
 		else{
-			fill_indirect(next_block,level-1,new_blocks,j,sb,file,inode_no);
+			fill_indirect(next_block,level-1,new_blocks,j,sb,file,inode_no,state);
 			for(int k = 0;k<4;k++){
 				buffer[4*i+k] = (next_block>>(8*k)) & 0xFF;
 			}
@@ -721,16 +754,17 @@ void write_data(vector<char>& data,vector<uint32_t>& data_blocks,Superblock sb,f
 
 		cout << "Writing " << bytes_to_write << " bytes to block " << block_no << endl;
 
-		//file.seekp(block_no*sb.block_size);
-		//file.write(data.data()+data_index,bytes_to_write);
+		file.seekp(block_no*sb.block_size);
+		file.write(data.data()+data_index,bytes_to_write);
 
 		data_index += bytes_to_write;
 	}
 }
 
-void overwrite_file(uint32_t cwd_inode,string filename,string input_filename,Superblock sb,fstream& file){
-	vector<char> data = read_input_file(input_filename);
+void overwrite_file(uint32_t cwd_inode,string filename,string input_filename,Superblock& sb,fstream& file){
+	AllocationState state;
 
+	vector<char> data = read_input_file(input_filename);
 	uint32_t inode_no = search(cwd_inode,sb,file,filename,1);
 
 	if(inode_no==0){
@@ -748,7 +782,7 @@ void overwrite_file(uint32_t cwd_inode,string filename,string input_filename,Sup
 	if(new_blocks>old_blocks){
 		int blocks_needed = new_blocks - old_blocks;
 
-		vector<uint32_t> extra_blocks = allocate_blocks(blocks_needed,inode_no,sb,file);
+		vector<uint32_t> extra_blocks = allocate_blocks(blocks_needed,inode_no,sb,file,state);
 
 		if(extra_blocks.size()!=blocks_needed){
 			cout << "Not enough free blocks." << endl;
@@ -763,14 +797,15 @@ void overwrite_file(uint32_t cwd_inode,string filename,string input_filename,Sup
 
 		if(new_blocks<old_blocks){
 			blocks_to_free = get_blocks_to_free(final_data_blocks,new_blocks);
+			free_blocks(blocks_to_free,state,sb,file);
 		}
 
 		final_data_blocks.resize(new_blocks);
 	}
 
 	write_data(data,final_data_blocks,sb,file);
-	write_inode(inode_no,final_data_blocks,data.size(),sb,file);
-
+	write_inode(inode_no,final_data_blocks,data.size(),sb,file,state);
+	commit_allocation_state(state,sb,file);
 	return;
 }
 
@@ -778,32 +813,32 @@ void append_data(vector<char>& data,vector<uint32_t>& data_blocks,uint32_t old_s
 	uint32_t data_index = 0;
 
 	uint32_t offset = old_size%sb.block_size;
+	int state_index = old_size/sb.block_size;
 
-	for(uint32_t block_no : data_blocks){
+	for(int i = state_index;i<data_blocks.size();i++){
 		if(data_index>=data.size()){
 			break;
 		}
 
+		uint32_t block_no = data_blocks[i];
 		uint32_t bytes_available = sb.block_size - offset;
 
 		uint32_t bytes_to_write = min(bytes_available,(uint32_t)data.size()-data_index);
 
-		cout << "Appending " << bytes_to_write << " bytes to block" << block_no << " at offset " << offset << endl;
+		cout << "Appending " << bytes_to_write << " bytes to block " << block_no << " at offset " << offset << endl;
 
-
-		//file.seekp(block_no*sb.block_size + offset);
-		//file.write(data.data()+data_index,bytes_to_write);
+		file.seekp(block_no*sb.block_size+offset);
+		file.write(data.data()+data_index,bytes_to_write);
 
 		data_index += bytes_to_write;
-
 		offset = 0;
-
 	}
 }
 
-void append(uint32_t cwd_inode,string filename,string input_filename,Superblock sb, fstream& file){
-	vector<char> data = read_input_file(input_filename);
+void append(uint32_t cwd_inode,string filename,string input_filename,Superblock& sb, fstream& file){
+	AllocationState state;
 
+	vector<char> data = read_input_file(input_filename);
 	uint32_t inode_no = search(cwd_inode,sb,file,filename,1);
 
 	if(inode_no==0){
@@ -820,7 +855,7 @@ void append(uint32_t cwd_inode,string filename,string input_filename,Superblock 
 	int blocks_needed = new_blocks - old_blocks;
 
 	if(blocks_needed>0){
-		vector<uint32_t> extra_blocks = allocate_blocks(blocks_needed,inode_no,sb,file);
+		vector<uint32_t> extra_blocks = allocate_blocks(blocks_needed,inode_no,sb,file,state);
 
 		if(extra_blocks.size()!=blocks_needed){
 			cout << "Not enough free blocks." << endl;
@@ -832,47 +867,131 @@ void append(uint32_t cwd_inode,string filename,string input_filename,Superblock 
 	}
 
 	append_data(data,final_data_blocks,target.size,sb,file);
-	write_inode(inode_no,final_data_blocks,final_size,sb,file);
-
+	write_inode(inode_no,final_data_blocks,final_size,sb,file,state);
+	commit_allocation_state(state,sb,file);
 	return;
 }
 
-vector<uint32_t> allocate_blocks(int no_of_blocks,uint32_t inode_no,Superblock sb,fstream& file){
+vector<uint32_t> allocate_blocks(int no_of_blocks,uint32_t inode_no,Superblock sb,fstream& file,AllocationState& state){
 	vector<uint32_t> block_numbers = {};
 
 	int block_group = (inode_no-1)/sb.inodes_per_group;
 
-	file.seekg(2048);
-	char buffer[sb.block_size];
-	file.read(buffer,sb.block_size);
+	if(state.bitmap.empty()){
+		state.block_group = block_group;
 
-	group_descriptor gd = read_group_descriptor(buffer+(32*block_group));
-	file.seekg(gd.block_bitmap*sb.block_size);
-	unsigned char bitmap[sb.block_size];
-	file.read((char*)bitmap,sb.block_size);
+		file.seekg(2048);
+		char buffer[sb.block_size];
+		file.read(buffer,sb.block_size);
 
+		group_descriptor gd = read_group_descriptor(buffer+(32*block_group));
+
+		state.bitmap_block = gd.block_bitmap;
+		state.bitmap.resize(sb.block_size);
+
+
+		file.seekg(gd.block_bitmap*sb.block_size);
+		file.read((char*)state.bitmap.data(),sb.block_size);
+
+	}
 
 	for(int i = 0;i<sb.blocks_per_group;i++){
 		int byte_index = i/8;
 		int bit_index = i%8;
 
-		int allocated = (bitmap[byte_index]>>bit_index) & 1;
+		int allocated = (state.bitmap[byte_index]>>bit_index) & 1;
 
 		if(!allocated){
-			bitmap[byte_index] = bitmap[byte_index] | (1 << bit_index);
+			state.bitmap[byte_index] = state.bitmap[byte_index] | (1 << bit_index);
 
 			uint32_t block_number = block_group*sb.blocks_per_group + i;
 			block_numbers.push_back(block_number);
-
+			state.allocated_blocks.push_back(block_number);
 			if(block_numbers.size()==no_of_blocks){
 				break;
 			}
 		}
 	}
-	//file.seekp(gd.block_bitmap*sb.block_size);
-	//file.write((char*)bitmap,sb.block_size);
-
 	return block_numbers;
+}
+
+void commit_allocation_state(AllocationState& state,Superblock& sb,fstream& file){
+	uint32_t allocated = state.allocated_blocks.size();
+	int freed = state.freed_blocks.size();
+
+	if(allocated==0 && freed==0){
+		return;
+	}
+
+	int net_change = allocated - freed;
+
+	//write updated bitmap
+	file.seekp(state.bitmap_block*sb.block_size);
+	file.write((char*)state.bitmap.data(),sb.block_size);
+
+	//write updated group descriptor
+	file.seekg(2048);
+
+	char group_table[sb.block_size];
+	file.read(group_table,sb.block_size);
+
+	int offset = state.block_group*32;
+	group_descriptor gd = read_group_descriptor(group_table+offset);
+	int32_t new_group_free = (int32_t)gd.free_blocks - net_change;
+	gd.free_blocks = new_group_free;
+
+	for(int k = 0;k<2;k++){
+		group_table[offset+12+k] = (new_group_free>>(8*k)) & 0xFF;
+	}
+
+	file.seekp(2048);
+	file.write(group_table,sb.block_size);
+
+	//write updated superblock
+	int32_t new_superblock_free = sb.total_unalloc_blocks - net_change;
+	sb.total_unalloc_blocks = new_superblock_free;
+
+	char free_block_bytes[4];
+
+	for(int k = 0;k<4;k++){
+		free_block_bytes[k] = (sb.total_unalloc_blocks >> (8*k)) & 0xFF;
+	}
+
+	file.seekp(1024+12);
+	file.write(free_block_bytes,4);
+
+}
+
+void free_blocks(vector<uint32_t>& blocks,AllocationState& state,Superblock sb,fstream& file){
+	if(blocks.empty()){
+		return;
+	}
+	if(state.bitmap.empty()){
+		state.block_group = (blocks[0]/sb.blocks_per_group);
+
+		file.seekg(2048);
+		char group_table[sb.block_size];
+		file.read(group_table,sb.block_size);
+
+		group_descriptor gd = read_group_descriptor(group_table+32*state.block_group);
+
+		state.bitmap_block = gd.block_bitmap;
+		state.bitmap.resize(sb.block_size);
+
+		file.seekg(state.bitmap_block*sb.block_size);
+		file.read((char*)state.bitmap.data(),sb.block_size);
+	}
+
+	for(uint32_t block_number : blocks){
+		int relative_block = block_number - state.block_group*sb.blocks_per_group;
+
+		int byte_index = relative_block/8;
+		int bit_index = relative_block%8;
+
+		state.bitmap[byte_index] &= ~(1 << bit_index);
+
+		state.freed_blocks.push_back(block_number);
+	}
 }
 
 vector<uint32_t> get_blocks_to_free(vector<uint32_t>& old_blocks,int new_block_count){
