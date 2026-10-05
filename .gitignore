@@ -1,4 +1,4 @@
 *.img
 *.o
 a.out
-
+input.txt
