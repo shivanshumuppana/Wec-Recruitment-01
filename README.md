@@ -56,7 +56,7 @@ The program reads the group descriptor table and iterates over each descriptor, 
 
 ## Task 2: Traverse Directories
 The directory traversal has the following program flow:
-- Read the inode corresponding to a directory, using a 'inode' structure, containing the following:
+- Read the inode corresponding to a directory, using an `inode` structure, containing the following:
     - mode
     - size
     - blocks
@@ -69,12 +69,12 @@ The directory traversal has the following program flow:
     - Filename length
     - File type
     - File name
-- Recursively traverse directory entries whose File type is 'Directory'.
+- Recursively traverse directory entries whose File type is `Directory`.
 - Recursively handle indirect block pointers.
 - Use indentation based on the recursion depth to display filesystem hierarchy.
 
 ### Directory Entry Handling
-- Entries '.' , '..' are not printed or recursively traversed.
+- Entries `.` , `..` are not printed or recursively traversed.
 - Entries with inode number 0 are skipped.
 - Record length of 0 stops the processing of the current directory block.
 - Variable length file names are handled with filename length field.
