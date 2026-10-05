@@ -54,6 +54,7 @@ vector<uint32_t> allocate_blocks(int no_of_blocks,uint32_t inode_no,Superblock s
 vector<uint32_t> get_data_blocks(inode target,Superblock sb,fstream& file);
 void write_inode(uint32_t inode_no,vector<uint32_t> final_data_blocks,uint32_t new_size,Superblock sb,fstream& file);
 void write_data(vector<char>& data,vector<uint32_t>& data_blocks,Superblock sb,fstream& file);
+vector<uint32_t> get_blocks_to_free(vector<uint32_t>& old_blocks,int new_block_count);
 
 /* Basic functions */
 uint32_t calculate_bytes(char* byte_start,int no_of_bytes){
@@ -535,7 +536,7 @@ int count_indirect_blocks(int data_blocks,Superblock sb){
 	int remaining = data_blocks - 12;
 	extra_blocks++;
 
-	if(remaining<=6){
+	if(remaining<=entry_capacity){
 		return extra_blocks;
 	}
 
@@ -619,12 +620,23 @@ void write_inode(uint32_t inode_no,vector<uint32_t> final_data_blocks,uint32_t n
 		}
 	}
 
+	//write down new size for inode
 	for(int k = 0;k<4;k++){
 		inode_buffer[4+k] = (new_size>>(8*k)) & 0xFF;
 	}
 
-	file.seekp(byte_offset);
-	file.write(inode_buffer,sb.inode_size);
+	int data_block_count = final_data_blocks.size();
+	int indirect_block_count = count_indirect_blocks(data_block_count,sb);
+	int total_allocated_blocks = data_block_count+indirect_block_count;
+	uint32_t new_i_blocks = total_allocated_blocks*(sb.block_size/512);
+
+	//write down new blocks (not superblock block size, the 512 bytes disk one)
+	for(int k = 0;k<4;k++){
+		inode_buffer[28 + k] = (new_i_blocks >> (8*k)) & 0xFF;
+	}
+
+	//file.seekp(byte_offset);
+	//file.write(inode_buffer,sb.inode_size);
 
 }
 
@@ -734,14 +746,59 @@ void overwrite_file(uint32_t cwd_inode,string filename,string input_filename,Sup
 	int new_blocks = ceil(((float)data.size())/sb.block_size);
 
 	if(new_blocks>old_blocks){
-		//give new blocks to file
-		return;
+		int blocks_needed = new_blocks - old_blocks;
+
+		vector<uint32_t> extra_blocks = allocate_blocks(blocks_needed,inode_no,sb,file);
+
+		if(extra_blocks.size()!=blocks_needed){
+			cout << "Not enough free blocks." << endl;
+			return;
+		}
+
+		final_data_blocks.insert(final_data_blocks.end(),extra_blocks.begin(),extra_blocks.end());
+
+	}
+	else{
+		vector<uint32_t> blocks_to_free;
+
+		if(new_blocks<old_blocks){
+			blocks_to_free = get_blocks_to_free(final_data_blocks,new_blocks);
+		}
+
+		final_data_blocks.resize(new_blocks);
 	}
 
-	final_data_blocks.resize(new_blocks);
 	write_data(data,final_data_blocks,sb,file);
 	write_inode(inode_no,final_data_blocks,data.size(),sb,file);
+
 	return;
+}
+
+void append_data(vector<char>& data,vector<uint32_t>& data_blocks,uint32_t old_size,Superblock sb,fstream& file){
+	uint32_t data_index = 0;
+
+	uint32_t offset = old_size%sb.block_size;
+
+	for(uint32_t block_no : data_blocks){
+		if(data_index>=data.size()){
+			break;
+		}
+
+		uint32_t bytes_available = sb.block_size - offset;
+
+		uint32_t bytes_to_write = min(bytes_available,(uint32_t)data.size()-data_index);
+
+		cout << "Appending " << bytes_to_write << " bytes to block" << block_no << " at offset " << offset << endl;
+
+
+		//file.seekp(block_no*sb.block_size + offset);
+		//file.write(data.data()+data_index,bytes_to_write);
+
+		data_index += bytes_to_write;
+
+		offset = 0;
+
+	}
 }
 
 void append(uint32_t cwd_inode,string filename,string input_filename,Superblock sb, fstream& file){
@@ -755,9 +812,27 @@ void append(uint32_t cwd_inode,string filename,string input_filename,Superblock 
 	}
 
 	inode target = process_inode(inode_no,sb,file);
-
+	vector<uint32_t> final_data_blocks = get_data_blocks(target,sb,file);
+	uint32_t final_size = target.size + data.size();
+	int new_blocks = ceil(((float)final_size)/sb.block_size);
 	int old_blocks = ceil(((float)target.size)/sb.block_size);
-	int new_blocks = ceil(((float)data.size())/sb.block_size);
+
+	int blocks_needed = new_blocks - old_blocks;
+
+	if(blocks_needed>0){
+		vector<uint32_t> extra_blocks = allocate_blocks(blocks_needed,inode_no,sb,file);
+
+		if(extra_blocks.size()!=blocks_needed){
+			cout << "Not enough free blocks." << endl;
+			return;
+		}
+
+		final_data_blocks.insert(final_data_blocks.end(),extra_blocks.begin(),extra_blocks.end());
+
+	}
+
+	append_data(data,final_data_blocks,target.size,sb,file);
+	write_inode(inode_no,final_data_blocks,final_size,sb,file);
 
 	return;
 }
@@ -800,6 +875,15 @@ vector<uint32_t> allocate_blocks(int no_of_blocks,uint32_t inode_no,Superblock s
 	return block_numbers;
 }
 
+vector<uint32_t> get_blocks_to_free(vector<uint32_t>& old_blocks,int new_block_count){
+	vector<uint32_t> blocks_to_free;
+
+	for(int i = new_block_count;i<old_blocks.size();i++){
+		blocks_to_free.push_back(old_blocks[i]);
+	}
+
+	return blocks_to_free;
+}
 int main(){
 
 	fstream file("/home/shivanshu_muppana/disk_proj/disk-backpup.img",ios::in | ios::out | ios::binary);
@@ -901,7 +985,7 @@ int main(){
 			cin >> filename;
 			cin >> input_filename;
 
-			//append
+			append(current_inode,filename,input_filename,sb,file);
 		}
 
 		else{
