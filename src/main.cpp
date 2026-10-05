@@ -49,6 +49,11 @@ int traverse_directory(uint32_t inode_no,Superblock sb,fstream& file,int depth);
 uint32_t search_block(uint32_t block_number,Superblock sb,fstream& file,string key,int desired_type);
 uint32_t search_indirect_block(uint32_t block_no,Superblock sb,fstream& file,int level,string key,int desired_type);
 uint32_t search(uint32_t inode_no,Superblock sb,fstream& file,string key,int desired_type);
+void fill_indirect(uint32_t &block_no,int level,vector<uint32_t>& new_blocks,int& j,Superblock sb, fstream& file,uint32_t inode_no);
+vector<uint32_t> allocate_blocks(int no_of_blocks,uint32_t inode_no,Superblock sb,fstream& file);
+vector<uint32_t> get_data_blocks(inode target,Superblock sb,fstream& file);
+void write_inode(uint32_t inode_no,vector<uint32_t> final_data_blocks,uint32_t new_size,Superblock sb,fstream& file);
+void write_data(vector<char>& data,vector<uint32_t>& data_blocks,Superblock sb,fstream& file);
 
 /* Basic functions */
 uint32_t calculate_bytes(char* byte_start,int no_of_bytes){
@@ -469,6 +474,38 @@ uint32_t get_indirect_block(uint32_t block_no,Superblock sb,fstream& file,uint32
 	return get_indirect_block(next,sb,file,entry_capacity,level-1,index%span);
 }
 
+vector<uint32_t> get_data_blocks(inode target,Superblock sb,fstream& file){
+	vector<uint32_t> data_blocks;
+
+	int no_of_blocks = ceil(((float)target.size)/(sb.block_size));
+	uint32_t entry_capacity = sb.block_size/4;
+
+	for(int i = 0;i<no_of_blocks;i++){
+		uint32_t block_no = 0;
+		if(i<12){
+			block_no = target.block_pointers[i];
+		}
+		else if(i<12+entry_capacity){
+			int index = i-12;
+			block_no = get_indirect_block(target.block_pointers[12],sb,file,entry_capacity,1,index);
+		}
+		else if(i<12+entry_capacity+(entry_capacity*entry_capacity)){
+			int index = i - (12 + entry_capacity);
+			block_no = get_indirect_block(target.block_pointers[13],sb,file,entry_capacity,2,index);
+		}
+		else{
+			int index = i - (12+entry_capacity+entry_capacity*entry_capacity);
+			block_no = get_indirect_block(target.block_pointers[14],sb,file,entry_capacity,3,index);
+		}
+
+		if(block_no!=0){
+			data_blocks.push_back(block_no);
+		}
+	}
+
+	return data_blocks;
+}
+
 void print_file(uint32_t cwd_inode_no,Superblock sb,fstream& file,string key){
 	uint32_t key_inode_no = search(cwd_inode_no,sb,file,key,1);
 	if(!key_inode_no){
@@ -478,41 +515,168 @@ void print_file(uint32_t cwd_inode_no,Superblock sb,fstream& file,string key){
 
 	//go to file and process its blocks
 	inode key_inode = process_inode(key_inode_no,sb,file);
-	int data_blocks = (key_inode.size + sb.block_size - 1)/sb.block_size;
-	uint32_t entry_capacity = sb.block_size/4;
-	int index;
+	vector<uint32_t> data_blocks = get_data_blocks(key_inode,sb,file);
 
-	for(int i = 0;i<data_blocks;i++){
-		uint32_t block_no = 0;
-		if(i<12){
-			index = i-(0);
-			block_no = key_inode.block_pointers[i];
-		}
-		else if(i<(12+entry_capacity)){
-			index = i-(12);
-			block_no = get_indirect_block(key_inode.block_pointers[12],sb,file,entry_capacity,1,index);
-		}
-		else if(i<(12+entry_capacity+entry_capacity*entry_capacity)){
-			index = i-(12+entry_capacity);
-			block_no = get_indirect_block(key_inode.block_pointers[13],sb,file,entry_capacity,2,index);
-		}
-		else{
-			index = i-(12+entry_capacity+entry_capacity*entry_capacity);
-			block_no = get_indirect_block(key_inode.block_pointers[14],sb,file,entry_capacity,3,index);
-		}
-
-		if(block_no==0){
-			continue;
-		}
-
+	for(uint32_t block_no : data_blocks){
 		//write min(block_size, size - i*block_size) bytes (implementation of reading the content of file is yet to be done)
 	}
 
 }
 
 /* Update existing files */
-void write_inode(uint32_t inode_no,Superblock sb,fstream& file){
+int count_indirect_blocks(int data_blocks,Superblock sb){
+	int entry_capacity = sb.block_size/4;
+	int extra_blocks = 0;
 
+	if(data_blocks<=12){
+		return 0;
+	}
+
+	int remaining = data_blocks - 12;
+	extra_blocks++;
+
+	if(remaining<=6){
+		return extra_blocks;
+	}
+
+	remaining -= entry_capacity;
+	extra_blocks++;
+
+	extra_blocks += ceil((float)remaining/entry_capacity);
+
+	if(remaining<=entry_capacity*entry_capacity){
+		return extra_blocks;
+	}
+
+	remaining -= entry_capacity*entry_capacity;
+	extra_blocks++;
+
+	int level2 = ceil((float)remaining/(entry_capacity*entry_capacity));
+	extra_blocks += level2;
+
+	extra_blocks += ceil((float)remaining/entry_capacity);
+
+	return extra_blocks;
+}
+
+void write_inode(uint32_t inode_no,vector<uint32_t> final_data_blocks,uint32_t new_size,Superblock sb,fstream& file){
+	int block_group = (inode_no-1)/sb.inodes_per_group;
+	int index = (inode_no-1)%sb.inodes_per_group;
+
+	file.seekg(2048);
+	char group_table[sb.block_size];
+	file.read(group_table,sb.block_size);
+	group_descriptor gd = read_group_descriptor(group_table+(32*block_group));
+	uint32_t byte_offset = gd.inode_table*sb.block_size + index*sb.inode_size;
+
+	char inode_buffer[sb.inode_size];
+	file.seekg(byte_offset);
+	file.read(inode_buffer,sb.inode_size);
+
+	//direct pointer
+	int j = 0;
+	for(int i = 0;i<12 && j<final_data_blocks.size();i++){
+		uint32_t current_block = calculate_bytes(inode_buffer+40+i*4,4);
+		if(current_block==0){
+			uint32_t new_block = final_data_blocks[j++];
+
+			for(int k = 0;k<4;k++){
+				inode_buffer[40+i*4+k] = (new_block>>(8*k)) & 0xFF;
+			}
+		}
+	}
+
+	//single indirect
+	if(j<final_data_blocks.size()){
+		uint32_t block_no = calculate_bytes(inode_buffer+40+12*4,4);
+
+		fill_indirect(block_no,1,final_data_blocks,j,sb,file,inode_no);
+
+		for(int k = 0;k<4;k++){
+			inode_buffer[40+12*4+k] = (block_no>>(8*k)) & 0xFF;
+		}
+	}
+
+	//double indirect
+	if(j<final_data_blocks.size()){
+		uint32_t block_no = calculate_bytes(inode_buffer+40+13*4,4);
+
+		fill_indirect(block_no,2,final_data_blocks,j,sb,file,inode_no);
+
+		for(int k = 0;k<4;k++){
+			inode_buffer[40+13*4+k] = (block_no>>(8*k)) & 0xFF;
+		}
+	}
+
+	//triple
+	if(j<final_data_blocks.size()){
+		uint32_t block_no = calculate_bytes(inode_buffer+40+14*4,4);
+
+		fill_indirect(block_no,3,final_data_blocks,j,sb,file,inode_no);
+
+		for(int k = 0;k<4;k++){
+			inode_buffer[40+14*4+k] = (block_no>>(8*k)) & 0xFF;
+		}
+	}
+
+	for(int k = 0;k<4;k++){
+		inode_buffer[4+k] = (new_size>>(8*k)) & 0xFF;
+	}
+
+	file.seekp(byte_offset);
+	file.write(inode_buffer,sb.inode_size);
+
+}
+
+void fill_indirect(uint32_t &block_no,int level,vector<uint32_t>& new_blocks,int& j,Superblock sb, fstream& file,uint32_t inode_no){
+	if(j>=new_blocks.size()){
+		return;
+	}
+
+	if(block_no==0){
+		vector<uint32_t> temp = allocate_blocks(1,inode_no,sb,file);
+
+		if(temp.empty()){
+			return;
+		}
+
+		block_no = temp[0];
+
+		char empty_block[sb.block_size] = {};
+
+		file.seekp(block_no*sb.block_size);
+		file.write(empty_block,sb.block_size);
+	}
+
+	uint32_t entry_capacity = sb.block_size/4;
+
+	char buffer[sb.block_size];
+
+	file.seekg(block_no*sb.block_size);
+	file.read(buffer,sb.block_size);
+
+	for(uint32_t i = 0;i<entry_capacity && j<new_blocks.size();i++){
+		uint32_t next_block = calculate_bytes(buffer+4*i,4);
+
+		if(level==1){
+			if(next_block==0){
+				next_block = new_blocks[j++];
+				for(int k = 0;k<4;k++){
+					buffer[4*i+k] = (next_block>>(8*k)) & 0xFF;
+				}
+			}
+		}
+		else{
+			fill_indirect(next_block,level-1,new_blocks,j,sb,file,inode_no);
+			for(int k = 0;k<4;k++){
+				buffer[4*i+k] = (next_block>>(8*k)) & 0xFF;
+			}
+		}
+
+		file.seekp(block_no*sb.block_size);
+		file.write(buffer,sb.block_size);
+	}
+	return;
 }
 vector<char> read_input_file(string filename){
 
@@ -532,6 +696,26 @@ vector<char> read_input_file(string filename){
 	return data;
 }
 
+void write_data(vector<char>& data,vector<uint32_t>& data_blocks,Superblock sb,fstream& file){
+	int data_index = 0;
+	for(uint32_t block_no : data_blocks){
+		//write into the remaining space first
+		int bytes_left = data.size()-data_index;
+		if(bytes_left<=0){
+			break;
+		}
+
+		int bytes_to_write = min((int)sb.block_size,bytes_left);
+
+		cout << "Writing " << bytes_to_write << " bytes to block " << block_no << endl;
+
+		//file.seekp(block_no*sb.block_size);
+		//file.write(data.data()+data_index,bytes_to_write);
+
+		data_index += bytes_to_write;
+	}
+}
+
 void overwrite_file(uint32_t cwd_inode,string filename,string input_filename,Superblock sb,fstream& file){
 	vector<char> data = read_input_file(input_filename);
 
@@ -544,9 +728,19 @@ void overwrite_file(uint32_t cwd_inode,string filename,string input_filename,Sup
 
 	inode target = process_inode(inode_no,sb,file);
 
-	int old_blocks = ceil(((float)target.size)/sb.block_size);
+	vector<uint32_t> final_data_blocks = get_data_blocks(target,sb,file);
+
+	int old_blocks = final_data_blocks.size();
 	int new_blocks = ceil(((float)data.size())/sb.block_size);
 
+	if(new_blocks>old_blocks){
+		//give new blocks to file
+		return;
+	}
+
+	final_data_blocks.resize(new_blocks);
+	write_data(data,final_data_blocks,sb,file);
+	write_inode(inode_no,final_data_blocks,data.size(),sb,file);
 	return;
 }
 
@@ -630,7 +824,14 @@ int main(){
 	string command;
 
 	while(true){
-		cout << "prompt> ";
+		cout << "/";
+		for(int i = 0;i<current_path.size();i++){
+			cout << current_path[i];
+			if(i!=current_path.size()-1){
+				cout << "/";
+			}
+		}
+		cout << "> ";
 		cin >> command;
 		if(command=="exit"){
 			break;
@@ -676,12 +877,14 @@ int main(){
 			}
 			cout << endl;
 		}
+
 		else if(command=="read"){
 			string filename;
 			cin >> filename;
 
 			print_file(current_inode,sb,file,filename);
 		}
+
 		else if(command=="write"){
 			string filename;
 			string input_filename;
@@ -689,7 +892,7 @@ int main(){
 			cin >> filename;
 			cin >> input_filename;
 
-			//overwrite
+			overwrite_file(current_inode,filename,input_filename,sb,file);
 		}
 		else if(command=="append"){
 			string filename;
@@ -700,6 +903,7 @@ int main(){
 
 			//append
 		}
+
 		else{
 			cout << "Unknown command\n" << endl;
 		}
