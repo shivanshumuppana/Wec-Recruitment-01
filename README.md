@@ -168,6 +168,7 @@ Allocation process is as follows:
 
 ### Block Deallocation (Freeing)
 When an overwrite results in a fewer amount of blocks being used, unused blocks are identified and marked free in the in-memory bitmap.
+However, the code currently has no functionality to deallocate metadata blocks for indirect block pointers, leading to block leaks. This will be improved upon in the next commit.
 
 ### Committing Allocation changes
 After the file data and inode fields have been updated, the in-memory allocation state is committed to the filesystem image.
